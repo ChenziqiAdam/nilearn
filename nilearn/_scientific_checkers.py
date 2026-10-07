@@ -145,11 +145,17 @@ def _scale_ok(*arrays, lo=1e-100, hi=1e100):
     for a in arrays:
         if a is None:
             continue
-        m = np.abs(np.asarray(a, dtype=np.float64))
+        a = np.asarray(a)
+        if a.dtype.kind == "f":
+            # the data's own dtype: below ~1e4 tiny its products are subnormal
+            lo_a = max(lo, 1e4 * float(np.finfo(a.dtype).tiny))
+        else:
+            lo_a = lo
+        m = np.abs(a.astype(np.float64))
         if m.size == 0:
             continue
         mx = float(m.max())
-        if mx != 0.0 and not (lo <= mx <= hi):
+        if mx != 0.0 and not (lo_a <= mx <= hi):
             return False
     return True
 
@@ -672,6 +678,7 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
 @_guarded
 def check_fixed_effects(contrasts, variances, precision_weighted, fx_con, fx_var):
     """NL-GLM-007: pooled effect/variance stay inside the physical bounds."""
+    eps = _eps_in(contrasts, variances, fx_con, fx_var)
     c = _f64(contrasts)
     v = np.maximum(_f64(variances), 1e-16)
     fc, fv = _f64(fx_con), _f64(fx_var)
@@ -684,12 +691,12 @@ def check_fixed_effects(contrasts, variances, precision_weighted, fx_con, fx_var
     if not keep.any():
         return
     c, fc, fv, v = c[:, keep], fc[keep], fv[keep], v[:, keep]
-    tol_e = _C * _EPS * n * np.abs(c).max(axis=0)
+    tol_e = _C * eps * n * np.abs(c).max(axis=0)
     bad = np.any(fc < c.min(axis=0) - tol_e) or np.any(fc > c.max(axis=0) + tol_e)
     vmin, vmax = v.min(axis=0), v.max(axis=0)
     upper = vmin if precision_weighted else vmax / n
     lower = vmin / n
-    rel = _C * _EPS * n
+    rel = _C * eps * n
     bad = bad or np.any(fv > upper * (1 + rel)) or np.any(fv < lower * (1 - rel))
     trigger_if(bad, "NL-GLM-007")
 
@@ -822,7 +829,7 @@ def check_hrf_derivative(func, t_r, oversampling, time_length, onset, dt, d):
     # P: the kernel holds the whole response. The kernel is sum-normalised, so a
     # kernel truncated inside the response is renormalised differently once it is
     # shifted and the finite difference no longer is the derivative of h.
-    if abs(h[-1]) > 1e-2 * h.max():
+    if abs(h[-1]) > 1e-2 * h.max() or abs(h[0]) > 1e-2 * h.max():
         return
     delta_grid = time_length / (n - 1)
     kp = int(np.argmax(h))
