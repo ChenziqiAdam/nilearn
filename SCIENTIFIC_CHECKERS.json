@@ -237,7 +237,7 @@
       "id": "NL-HRF-004",
       "invariant": "the finite-difference derivative `d = (h(t) - h(t - delta)) / delta` of the response changes sign from positive to negative within `delta + 2 Delta` of the argmax of `h`",
       "observation_point": "return of `_generic_time_derivative` (both HRFs)",
-      "precondition": "`onset` arbitrary, grid spacing `Delta` and finite-difference step `delta = 0.1 s`, the kernel contains the response (|h(end)| <= 1e-2 max h)",
+      "precondition": "`onset` arbitrary, grid spacing `Delta` and finite-difference step `delta = 0.1 s`, the kernel contains the response (|h(end)|, |h(0)| <= 1e-2 max h)",
       "rationale": "The time-derivative kernel crosses zero at the HRF peak.",
       "scientific_quantity": "HRF time-derivative kernel",
       "source": "nilearn/glm/first_level/hemodynamic_models.py",
