@@ -23,7 +23,7 @@ from numpy.testing import assert_array_equal
 from scipy.ndimage import gaussian_filter1d, generate_binary_structure, label
 from scipy.stats import scoreatpercentile
 
-from nilearn import EXPAND_PATH_WILDCARDS, signal
+from nilearn import EXPAND_PATH_WILDCARDS, _scientific_checkers as _sc, signal
 from nilearn._utils import logger
 from nilearn._utils.cache_mixin import cache
 from nilearn._utils.docs import fill_doc
@@ -416,6 +416,8 @@ def smooth_array(
     if ensure_finite:
         # SPM tends to put NaNs in the data outside the brain
         ensure_finite_data(arr, raise_warning=False)
+    if _sc.enabled():
+        _sc_in = _sc.snap_copy(arr)
     if isinstance(fwhm, str) and (fwhm == "fast"):
         arr = _fast_smooth_array(arr)
     elif fwhm is not None:
@@ -428,6 +430,8 @@ def smooth_array(
         for n, s in enumerate(sigma):
             if s > 0.0:
                 gaussian_filter1d(arr, s, output=arr, axis=n)
+    if _sc.enabled():
+        _sc.check_smoothing(_sc_in, arr, affine, fwhm, smooth_array, copy)
     return arr
 
 
@@ -1779,11 +1783,15 @@ def threshold_img(
         img_data = img_data[:, :, :, None]
     if cluster_threshold > 0:
         if isinstance(img, NiimgLike):
+            if _sc.enabled():
+                _sc_pre = _sc.snap_copy(img_data)
             for i_vol in range(img_data.shape[3]):
                 img_data[..., i_vol] = _apply_cluster_size_threshold(
                     img_data[..., i_vol],
                     cluster_threshold,
                 )
+            if _sc.enabled():
+                _sc.check_cluster_extent(_sc_pre, img_data, cluster_threshold)
         else:
             for hemi in img_data.data.parts:
                 clusters, labels = find_surface_clusters(

@@ -11,6 +11,7 @@ import pandas as pd
 import scipy.stats as sps
 from nibabel import Nifti1Image
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils import logger
 from nilearn._utils.logger import find_stack_level
 from nilearn._utils.param_validation import check_parameter_in_allowed
@@ -175,6 +176,8 @@ class Contrast:
         else:
             raise ValueError("Unknown statistic type")
         self.p_value_ = p_values
+        if _sc.enabled():
+            _sc.check_t_f_equivalence(self, baseline, p_values)
         return p_values
 
     def one_minus_pvalue(self, baseline: float = 0.0) -> np.ndarray:
@@ -234,6 +237,8 @@ class Contrast:
         self.z_score_ = z_score(
             self.p_value_, one_minus_pvalue=self.one_minus_pvalue_
         )
+        if _sc.enabled():
+            _sc.check_zscore_odd(self, baseline, self.z_score_)
         return self.z_score_
 
     def __add__(self, other):
@@ -415,13 +420,18 @@ def compute_contrast(
             var_[label_mask] = rss
 
     dof_ = regression_result[label_].df_residuals
-    return Contrast(
+    con = Contrast(
         effect=effect_,
         variance=var_,
         dim=dim,
         dof=dof_,
         stat_type=stat_type,
     )
+    if _sc.enabled():
+        _sc.check_contrast_invariance(
+            labels, regression_result, con_val, stat_type, con
+        )
+    return con
 
 
 def compute_fixed_effect_contrast(labels, results, con_vals, stat_type=None):
@@ -627,6 +637,14 @@ def _compute_fixed_effects_params(
     fixed_fx_z_score = con.z_score()
     fixed_fx_stat = con.stat_
 
+    if _sc.enabled():
+        _sc.check_fixed_effects(
+            contrasts,
+            variances,
+            precision_weighted,
+            fixed_fx_contrasts,
+            fixed_fx_variance,
+        )
     return (
         fixed_fx_contrasts,
         fixed_fx_variance,

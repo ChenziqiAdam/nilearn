@@ -7,6 +7,7 @@ import scipy.linalg as spl
 from scipy.linalg.lapack import get_lapack_funcs
 from scipy.stats import norm
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.logger import find_stack_level
 
 
@@ -31,6 +32,7 @@ def z_score(pvalue, one_minus_pvalue=None):
     z_scores : 1-d array shape=(n_z_scores,), with n_z_scores = n_pvalues
 
     """
+    pvalue_in, one_minus_pvalue_in = pvalue, one_minus_pvalue
     pvalue = np.clip(pvalue, 1.0e-300, 1.0 - 1.0e-16)
     z_scores_sf = norm.isf(pvalue)
 
@@ -44,6 +46,8 @@ def z_score(pvalue, one_minus_pvalue=None):
         z_scores[np.atleast_1d(use_sf)] = z_scores_sf[use_sf]
     else:
         z_scores = z_scores_sf
+    if _sc.enabled():
+        _sc.check_zscore_tails(pvalue_in, one_minus_pvalue_in, z_scores)
     return z_scores
 
 

@@ -13,6 +13,7 @@ from joblib import Parallel, delayed
 from nibabel import Nifti1Image
 from scipy import linalg, ndimage
 
+from nilearn import _scientific_checkers as _sc
 from nilearn import masking
 from nilearn._utils.docs import fill_doc
 from nilearn._utils.logger import find_stack_level
@@ -455,7 +456,12 @@ def signals_to_img_labels(
                     else:
                         data[i, j, k] = signals[num]
 
-    return new_img_like(labels_img, data, labels_img.affine)
+    result_img = new_img_like(labels_img, data, labels_img.affine)
+    if _sc.enabled():
+        _sc.check_labels_signal_roundtrip(
+            signals, result_img, labels_img, mask_img, background_label
+        )
+    return result_img
 
 
 @fill_doc
@@ -602,9 +608,14 @@ def signals_to_img_maps(
         assert maps_mask.shape == maps_data.shape[:3]
 
     data = np.dot(region_signals, maps_data[maps_mask, :].T)
-    return masking.unmask(
+    result_img = masking.unmask(
         data, new_img_like(maps_img, maps_mask, maps_img.affine)
     )
+    if _sc.enabled():
+        _sc.check_maps_signal_consistency(
+            region_signals, result_img, maps_img, mask_img
+        )
+    return result_img
 
 
 def _trim_maps(maps, mask, keep_empty=False, order="F"):

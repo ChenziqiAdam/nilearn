@@ -6,6 +6,7 @@ import numpy as np
 from scipy import linalg
 from scipy.ndimage import label
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.logger import find_stack_level
 from nilearn._utils.param_validation import check_parameter_in_allowed
 
@@ -132,6 +133,8 @@ def calculate_tfce(
                     temp_arr3d.shape
                 )
 
+    if _sc.enabled():
+        _sc.check_tfce(arr4d, bin_struct, E, H, dh, two_sided_test, tfce_4d)
     return tfce_4d
 
 
@@ -196,6 +199,8 @@ def null_to_p(test_values, null_array, alternative="two-sided"):
     )
 
     return_first = isinstance(test_values, (float, int))
+    if _sc.enabled():
+        _sc_tv = _sc.snap_copy(test_values)
     test_values = np.atleast_1d(test_values)
     null_array = np.array(null_array)
 
@@ -228,6 +233,8 @@ def null_to_p(test_values, null_array, alternative="two-sided"):
     if reconstruct:
         result = result[uniq_idx]
 
+    if _sc.enabled():
+        _sc.check_null_to_p(_sc_tv, result, alternative)
     return result[0] if return_first else result
 
 
@@ -302,6 +309,10 @@ def calculate_cluster_measures(
 
         max_sizes[i_regressor], max_masses[i_regressor] = max_size, max_mass
 
+    if _sc.enabled():
+        _sc.check_cluster_measures(
+            arr4d, threshold, bin_struct, two_sided_test, max_sizes, max_masses
+        )
     return max_sizes, max_masses
 
 

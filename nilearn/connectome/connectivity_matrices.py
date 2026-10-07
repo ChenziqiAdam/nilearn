@@ -11,6 +11,7 @@ from sklearn.covariance import LedoitWolf
 from sklearn.utils.estimator_checks import check_is_fitted
 from sklearn.utils.validation import validate_data
 
+from nilearn import _scientific_checkers as _sc
 from nilearn import signal
 from nilearn._base import NilearnBaseEstimator
 from nilearn._utils.docs import fill_doc
@@ -215,6 +216,15 @@ def _geometric_mean(matrices, init=None, max_iter=10, tol=1e-7):
             stacklevel=find_stack_level(),
         )
 
+    if _sc.enabled():
+        _sc.check_frechet_equivariance(
+            matrices,
+            init,
+            max_iter,
+            tol,
+            gmean,
+            tol is not None and norm / gmean.size < tol,
+        )
     return gmean
 
 
@@ -270,7 +280,10 @@ def sym_matrix_to_vec(symmetric, discard_diagonal: bool = False) -> np.ndarray:
     scaling = np.ones(symmetric.shape[-2:])
     np.fill_diagonal(scaling, sqrt(2.0))
     tril_mask = np.tril(np.ones(symmetric.shape[-2:])).astype(bool)
-    return symmetric[..., tril_mask] / scaling[tril_mask]
+    vec = symmetric[..., tril_mask] / scaling[tril_mask]
+    if _sc.enabled():
+        _sc.check_vec_isometry_to_vec(symmetric, vec, sym_matrix_to_vec)
+    return vec
 
 
 def vec_to_sym_matrix(vec, diagonal=None) -> np.ndarray:
@@ -367,6 +380,8 @@ def vec_to_sym_matrix(vec, diagonal=None) -> np.ndarray:
 
     sym[..., mask] *= sqrt(2)
 
+    if _sc.enabled() and diagonal is None:
+        _sc.check_vec_isometry_to_sym(vec, sym, vec_to_sym_matrix)
     return sym
 
 
@@ -398,6 +413,8 @@ def cov_to_corr(covariance: np.ndarray) -> np.ndarray:
 
     # Force exact 1. on diagonal
     np.fill_diagonal(correlation, 1.0)
+    if _sc.enabled():
+        _sc.check_corr_scale_invariance(covariance, correlation)
     return correlation
 
 
@@ -647,6 +664,8 @@ class ConnectivityMeasure(TransformerMixin, NilearnBaseEstimator):
                 connectivities = [
                     prec_to_partial(linalg.inv(cov)) for cov in covariances
                 ]
+                if _sc.enabled():
+                    _sc.check_partial_correlation(covariances, connectivities)
 
         # Store the mean
         if do_fit:
@@ -677,6 +696,13 @@ class ConnectivityMeasure(TransformerMixin, NilearnBaseEstimator):
                 ]
 
             connectivities = np.array(connectivities)
+
+            if _sc.enabled():
+                if self.kind == "tangent":
+                    if do_fit:
+                        _sc.check_tangent_centering(connectivities)
+                elif self.kind in ("covariance", "correlation", "precision"):
+                    _sc.check_connectivity_psd(connectivities, self.kind)
 
             if self.vectorize:
                 connectivities = sym_matrix_to_vec(

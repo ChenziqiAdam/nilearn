@@ -16,6 +16,7 @@ from sklearn.model_selection import check_cv
 from sklearn.utils import check_array
 from sklearn.utils.extmath import fast_logdet
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._base import NilearnBaseEstimator
 from nilearn._utils import logger
 from nilearn._utils.cache_mixin import CacheMixin
@@ -461,6 +462,8 @@ def _group_sparse_covariance(
             stacklevel=find_stack_level(),
         )
 
+    if _sc.enabled():
+        _sc.check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init)
     return omega
 
 

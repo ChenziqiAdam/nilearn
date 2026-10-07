@@ -11,6 +11,7 @@ from nibabel import Nifti1Image
 from scipy.ndimage import label
 from scipy.stats import norm
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.docs import fill_doc
 from nilearn._utils.helpers import is_matplotlib_installed
 from nilearn._utils.logger import find_stack_level
@@ -494,6 +495,7 @@ def threshold_stats_img(
         [0. , 2.2, 0. ]]])
 
     """
+    _sc_stat_img = stat_img
     if height_control is None:
         if threshold is None:
             threshold = DEFAULT_Z_THRESHOLD
@@ -580,4 +582,16 @@ def threshold_stats_img(
     )
 
     assert threshold is not None
+    if _sc.enabled() and height_control in ("fpr", "fdr", "bonferroni"):
+        if height_control == "fdr":
+            _sc.check_fdr_control(stats, threshold, alpha, two_sided)
+        _sc.check_multiple_comparison(
+            _sc_stat_img,
+            mask_img,
+            alpha,
+            two_sided,
+            stats,
+            height_control,
+            threshold,
+        )
     return stat_img, threshold

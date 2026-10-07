@@ -12,6 +12,7 @@ from scipy.interpolate import interp1d
 from scipy.linalg import pinv
 from scipy.stats import gamma
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.docs import fill_doc
 from nilearn._utils.logger import find_stack_level
 from nilearn._utils.param_validation import check_params
@@ -204,11 +205,16 @@ def _generic_time_derivative(
     dt : :obj:`float`, default=0.1
         Time step for the derivative.
     """
-    return _compute_derivative_from_values(
+    derivative = _compute_derivative_from_values(
         func(t_r, oversampling, time_length, onset),
         func(t_r, oversampling, time_length, onset + dt),
         dt=dt,
     )
+    if _sc.enabled():
+        _sc.check_hrf_derivative(
+            func, t_r, oversampling, time_length, onset, dt, derivative
+        )
+    return derivative
 
 
 def spm_time_derivative(
@@ -586,9 +592,13 @@ def orthogonalize(X):
     if X.size == X.shape[0]:
         return X
 
+    if _sc.enabled():
+        _sc_x0 = _sc.snap_copy(X)
     for i in range(1, X.shape[1]):
         X[:, i] -= np.dot(np.dot(X[:, i], X[:, :i]), pinv(X[:, :i]))
 
+    if _sc.enabled():
+        _sc.check_orthogonalize(_sc_x0, X)
     return X
 
 
@@ -858,6 +868,17 @@ def compute_regressor(
 
     # 6 generate regressor names
     reg_names = _regressor_names(con_id, hrf_model, fir_delays=fir_delays)
+    if _sc.enabled():
+        _sc.check_bold_linearity(
+            exp_condition,
+            hrf_model,
+            frame_times,
+            con_id,
+            oversampling,
+            fir_delays,
+            min_onset,
+            computed_regressors,
+        )
     return computed_regressors, reg_names
 
 

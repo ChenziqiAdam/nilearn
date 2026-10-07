@@ -22,6 +22,7 @@ import scipy.linalg as spl
 from nibabel.onetime import auto_attr
 from numpy.linalg import matrix_rank
 
+from nilearn import _scientific_checkers as _sc
 from nilearn.glm._utils import positive_reciprocal
 from nilearn.glm.model import LikelihoodModelResults
 
@@ -203,6 +204,8 @@ class OLSModel:
             dispersion=dispersion,
             cov=self.normalized_cov_beta,
         )
+        if _sc.enabled():
+            _sc.check_ols_normal_equations(self.whitened_design, wY, wresid)
         return lfit
 
 
@@ -345,7 +348,16 @@ class RegressionResults(LikelihoodModelResults):
 
         If not from an OLS model this is "pseudo"-R2.
         """
-        return np.var(self.predicted, 0) / np.var(self.whitened_Y, 0)
+        r2 = np.var(self.predicted, 0) / np.var(self.whitened_Y, 0)
+        if _sc.enabled():
+            _sc.check_r_square(
+                self.model,
+                self.whitened_design,
+                self.whitened_Y,
+                self.whitened_residuals,
+                r2,
+            )
+        return r2
 
     @auto_attr
     def MSE(self):  # noqa: N802

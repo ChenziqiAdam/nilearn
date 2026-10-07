@@ -16,6 +16,7 @@ from scipy import signal as sp_signal
 from scipy.interpolate import CubicSpline
 from sklearn.utils import as_float_array, gen_even_slices
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.docs import fill_doc
 from nilearn._utils.helpers import stringify_path
 from nilearn._utils.logger import find_stack_level
@@ -70,6 +71,8 @@ def standardize_signal(
     """
     check_params(locals())
 
+    if _sc.enabled():
+        _sc_mx = _sc.col_absmax(signals)
     signals = _detrend(signals, inplace=False) if detrend else signals.copy()
 
     if standardize is None:
@@ -82,6 +85,9 @@ def standardize_signal(
             stacklevel=find_stack_level(),
         )
         return signals
+
+    if _sc.enabled():
+        _sc_in = _sc.snap_standardize(signals)
 
     # Standardize
     if standardize == "zscore_sample":
@@ -109,6 +115,8 @@ def standardize_signal(
             )
             signals[:, invalid_ix] = 0
 
+    if _sc.enabled():
+        _sc.check_standardize(_sc_in, signals, standardize, detrend, _sc_mx)
     return signals
 
 
@@ -238,6 +246,8 @@ def _detrend(signals, inplace=False, type="linear", n_batches=10):
     -----
     If a signal of length 1 is given, it is returned unchanged.
     """
+    if _sc.enabled():
+        _sc_l1 = _sc.l1_cols(signals)
     signals = as_float_array(signals, copy=not inplace)
     if signals.shape[0] == 1:
         warnings.warn(
@@ -268,6 +278,8 @@ def _detrend(signals, inplace=False, type="linear", n_batches=10):
             signals[:, batch] -= (
                 np.dot(regressor[:, 0], signals[:, batch]) * regressor
             )
+        if _sc.enabled():
+            _sc.check_detrend(signals, _sc_l1)
     return signals
 
 
@@ -443,6 +455,8 @@ def butterworth(
         output="sos",
         fs=sampling_rate,
     )
+    if _sc.enabled():
+        _sc.check_butterworth_cutoff(sos, critical_freq, sampling_rate, order)
     if signals.ndim == 1:
         # 1D case
         output = sp_signal.sosfiltfilt(
@@ -532,6 +546,8 @@ def high_variance_confounds(
     nilearn.image.high_variance_confounds
     """
     check_params(locals())
+    if _sc.enabled():
+        _sc_mx = _sc.col_absmax(series)
     if detrend:
         series = _detrend(series)  # copy
 
@@ -546,6 +562,16 @@ def high_variance_confounds(
     s, u = linalg.eigh(series.dot(series.T) / series.shape[0])
     ix_ = np.argsort(s)[::-1]
     u = u[:, ix_[:n_confounds]].copy()
+    if detrend and _sc.enabled():
+        _sc.check_compcor(
+            u,
+            s,
+            ix_,
+            n_confounds,
+            series.shape[0],
+            None if _sc_mx is None else float(_sc_mx.max()),
+            series.shape[1],
+        )
     return u
 
 
@@ -761,6 +787,17 @@ def clean(
     signals, runs, confounds, sample_mask = _sanitize_inputs(
         signals, runs, confounds, sample_mask, ensure_finite
     )
+    if _sc.enabled():
+        _sc_snap = _sc.snap_clean(
+            signals,
+            confounds,
+            runs,
+            sample_mask,
+            detrend,
+            filter_type,
+            standardize,
+            standardize_confounds,
+        )
 
     # Process each run independently
     if runs is not None:
@@ -867,6 +904,8 @@ def clean(
 
     # Standardize
     if not standardize:
+        if _sc.enabled():
+            _sc.check_clean_orthogonality(_sc_snap, signals)
         return signals
 
     # detect if mean is close to zero; This can obscure the scale of the signal
@@ -894,6 +933,8 @@ def clean(
             standardize=standardize,
             detrend=False,
         )
+    if _sc.enabled():
+        _sc.check_clean_orthogonality(_sc_snap, signals)
     return signals
 
 
@@ -990,6 +1031,8 @@ def create_cosine_drift(high_pass, frame_times):
         )
 
     cosine_drift[:, -1] = 1.0
+    if _sc.enabled():
+        _sc.check_cosine_drift(cosine_drift, frame_times, high_pass)
     return cosine_drift
 
 

@@ -12,6 +12,7 @@ from nibabel import Nifti1Image
 from scipy import linalg
 from scipy.ndimage import affine_transform, find_objects
 
+from nilearn import _scientific_checkers as _sc
 from nilearn._utils.docs import fill_doc
 from nilearn._utils.helpers import stringify_path
 from nilearn._utils.logger import find_stack_level
@@ -710,6 +711,16 @@ def resample_img(
         vmax = max(np.nanmax(data), 0)
         resampled_data.clip(vmin, vmax, out=resampled_data)
 
+    if _sc.enabled():
+        _sc.check_resample_geometry(
+            data,
+            affine,
+            resampled_data,
+            target_affine,
+            interpolation,
+            fill_value,
+            clip,
+        )
     return new_img_like(
         img, resampled_data, target_affine, copy_header=copy_header
     )
