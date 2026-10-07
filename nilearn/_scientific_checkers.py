@@ -130,6 +130,42 @@ def _f64(x):
     return np.asarray(x, dtype=np.float64)
 
 
+def _eps_in(*arrays):
+    """Largest unit round-off among the (floating) input arrays, >= float64 eps."""
+    eps = _EPS
+    for a in arrays:
+        if a is not None:
+            eps = max(eps, _eps_of(np.asarray(a)))
+    return eps
+
+
+def _scale_ok(*arrays, lo=1e-100, hi=1e100):
+    """P: every non-zero magnitude lies where float64 products/squares neither
+    underflow into subnormals nor overflow (the checkers form such products)."""
+    for a in arrays:
+        if a is None:
+            continue
+        m = np.abs(np.asarray(a, dtype=np.float64))
+        if m.size == 0:
+            continue
+        mx = float(m.max())
+        if mx != 0.0 and not (lo <= mx <= hi):
+            return False
+    return True
+
+
+_STATE = {"nonconverged": False}
+
+
+def note_nonconvergence():
+    """Curator hook: a Frechet-mean iteration stopped at max_iter (it warns)."""
+    _STATE["nonconverged"] = True
+
+
+def reset_nonconvergence():
+    _STATE["nonconverged"] = False
+
+
 def _finite(x):
     return bool(np.all(np.isfinite(np.asarray(x))))
 
@@ -152,6 +188,8 @@ def check_detrend(out, l1):
     if out.ndim != 2 or out.shape[0] < 2 or not _finite(out):
         return
     n = out.shape[0]
+    if not _scale_ok(l1 / n):
+        return
     # float32 input stays float32 inside _detrend; each output element carries a
     # few ulps of the *input* magnitude, hence C * eps_d * sum|x_in|.
     tol = _C * _eps_of(out) * l1
@@ -189,6 +227,9 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
     if x.ndim != 2 or x.shape[0] < 2 or o.shape != x.shape:
         return
     if not (_finite(x) and _finite(o)):
+        return
+    # P: magnitudes where the variance (a sum of squares) is representable
+    if not _scale_ok(x, lo=0.0):
         return
     eps = _eps_of(o)
     o64 = o.astype(np.float64)
@@ -240,6 +281,10 @@ def check_butterworth_cutoff(sos, critical_freq, sampling_rate, order):
     freqs = np.atleast_1d(np.asarray(critical_freq, dtype=np.float64))
     # P: away from 0 and Nyquist so that the float64 sos stays well-conditioned
     if np.any(freqs / nyq < 1e-3) or np.any(freqs / nyq > 1 - 1e-3):
+        return
+    # P: a band-pass whose edges are closer than 0.1 % of the cut-off is a
+    # numerically degenerate design (sos coefficients lose the edge separation)
+    if freqs.size > 1 and np.ptp(freqs) < 1e-3 * freqs.max():
         return
     _, h = sosfreqz(sos, worN=freqs, fs=sampling_rate)
     gain = np.abs(h)
@@ -297,6 +342,8 @@ def check_clean_orthogonality(snap, out):
     nz = cn > 0
     if not nz.any() or o.shape[0] != k.shape[0]:
         return
+    if not _scale_ok(k, snap["xs"]):
+        return
     kn = k[:, nz] / cn[nz]
     s = np.linalg.svd(kn, compute_uv=False)
     smax = s[0]
@@ -318,7 +365,13 @@ def check_clean_orthogonality(snap, out):
         factor = 1.0 / sd
     else:
         factor = np.ones(xs.shape[1])
-    tol = _C * eps * kappa * cn[nz][:, None] * (xnorm * factor)[None, :]
+    # float64 centring of the confounds leaves a mean of eps * |offset|, which the
+    # (uncentred) signal's own offset multiplies: one more factor of the
+    # confounds' offset-to-spread ratio
+    kraw = snap["conf"]
+    ksd = kraw.std(axis=0)
+    off_k = float(np.max(np.abs(kraw.mean(axis=0))[ksd > 0] / ksd[ksd > 0])) if np.any(ksd > 0) else 0.0
+    tol = _C * eps * kappa * (1.0 + off_k) * cn[nz][:, None] * (xnorm * factor)[None, :]
     dots = np.abs(k[:, nz].T @ oc)
     trigger_if(np.any(dots > tol), "NL-SIG-005")
 
@@ -345,11 +398,13 @@ def check_cosine_drift(drift, frame_times, high_pass):
         return
     if high_pass <= 0:
         return
-    # the 1e-9 relative margins below absorb the floor() boundary at integer
-    # 2 n dt high_pass, so no case needs to be excluded
+    # the relative margin absorbs the floor() boundary at integer 2 n dt high_pass
+    # and the ambiguity of dt on a slightly jittered grid (the library uses the
+    # mean step, the median is used here)
+    margin = 1e-9 + 4.0 * float(np.max(np.abs(dts - dt))) / dt
     f = lambda k: k / (2.0 * n * dt)  # noqa: E731
-    too_high = m >= 1 and f(m) > high_pass * (1 + 1e-9)
-    too_low = m < n - 1 and f(m + 1) <= high_pass * (1 - 1e-9)
+    too_high = m >= 1 and f(m) > high_pass * (1 + margin)
+    too_low = m < n - 1 and f(m + 1) <= high_pass * (1 - margin)
     trigger_if(too_high or too_low, "NL-SIG-007")
 
 
@@ -362,7 +417,7 @@ def check_compcor(u, s, ix_, n_confounds, n_samples, mx_in=None, n_kept=1):
         return
     ss = s[ix_]
     smax = ss[0]
-    if smax <= 0:
+    if smax <= 0 or not _scale_ok(np.sqrt(smax)):
         return
     k = min(n_confounds, u.shape[1])
     r = np.arange(n_samples, dtype=np.float64)
@@ -412,8 +467,11 @@ def _svd_condition(x, max_kappa=1e8):
 @_guarded
 def check_ols_normal_equations(xw, wy, wresid):
     """NL-GLM-001: X_w^T r_w = 0."""
+    eps = _eps_in(xw, wy, wresid)
     x, y, r = _f64(xw), _f64(wy), _f64(wresid)
     if x.ndim != 2 or not (_finite(x) and _finite(y) and _finite(r)):
+        return
+    if not _scale_ok(x, y):
         return
     n, p = x.shape
     kappa = _svd_condition(x)
@@ -421,7 +479,7 @@ def check_ols_normal_equations(xw, wy, wresid):
         return
     y2, r2 = y.reshape(n, -1), r.reshape(n, -1)
     g = np.abs(x.T @ r2).max(axis=0)
-    tol = _C * _EPS * (n + p) * kappa * np.linalg.norm(x) * np.linalg.norm(y2, axis=0)
+    tol = _C * eps * (n + p) * kappa * np.linalg.norm(x) * np.linalg.norm(y2, axis=0)
     trigger_if(np.any(g > tol), "NL-GLM-001")
 
 
@@ -434,6 +492,8 @@ def check_r_square(model, xw, wy, wresid, r2):
     x, y, r = _f64(xw), _f64(wy), _f64(wresid)
     r2 = np.atleast_1d(_f64(r2)).ravel()
     if x.ndim != 2 or not (_finite(x) and _finite(y) and _finite(r)):
+        return
+    if not _scale_ok(x, y):
         return
     n = x.shape[0]
     kappa = _svd_condition(x)
@@ -457,6 +517,11 @@ def check_r_square(model, xw, wy, wresid, r2):
     # data offset multiply. Factor 4: SSE and var each accumulate that error.
     eps = max(_EPS, _eps_of(np.asarray(wy)))
     tol = 4 * _C * eps * (1.0 + kappa * np.sqrt(1.0 + mu**2 / np.where(ok, var, 1.0)))
+    # P: the tolerance is smaller than the range of R^2 (a spread that is rounding
+    # noise of a huge offset leaves R^2 undetermined)
+    ok = ok & (tol < 0.5)
+    if not ok.any():
+        return
     got = r2[idx]
     bad = np.any(ok & (np.abs(got - ref) > tol))
     bad = bad or np.any(ok & ((got < -tol) | (got > 1 + tol)))
@@ -468,6 +533,7 @@ def check_zscore_tails(pvalue, one_minus_pvalue, z):
     """NL-GLM-003: the z-score inverts the tail probabilities it came from."""
     from scipy.stats import norm
 
+    eps = _eps_in(pvalue, one_minus_pvalue, z)
     p = np.atleast_1d(_f64(pvalue)).ravel()
     z = np.atleast_1d(_f64(z)).ravel()
     if p.shape != z.shape:
@@ -482,7 +548,7 @@ def check_zscore_tails(pvalue, one_minus_pvalue, z):
     if not ok.any():
         return
     zz, pp = z[ok], p[ok]
-    f = _C * _EPS * (1.0 + zz**2)
+    f = _C * eps * (1.0 + zz**2)
     pos = zz >= 0
     bad = np.any(np.abs(norm.sf(zz[pos]) - pp[pos]) > f[pos] * pp[pos])
     neg = ~pos
@@ -491,7 +557,7 @@ def check_zscore_tails(pvalue, one_minus_pvalue, z):
             oo = omp[ok][neg]
             bad = bad or np.any(np.abs(norm.cdf(zz[neg]) - oo) > f[neg] * oo)
         else:
-            bad = bad or np.any(np.abs(norm.sf(zz[neg]) - pp[neg]) > _C * _EPS)
+            bad = bad or np.any(np.abs(norm.sf(zz[neg]) - pp[neg]) > _C * eps)
     trigger_if(bad, "NL-GLM-003")
 
 
@@ -517,6 +583,7 @@ def check_t_f_equivalence(con, baseline, p_t):
     e = np.asarray(con.effect)
     if e.ndim == 2 and e.shape[0] != 1:
         return
+    eps = _eps_in(e, con.variance, p_t)
     e2 = np.atleast_2d(_f64(e))
     cf = _clone_contrast(con, effect=e2, stat_type="F", dim=1)
     pf = np.asarray(cf.p_value(baseline), dtype=np.float64).ravel()
@@ -535,7 +602,7 @@ def check_t_f_equivalence(con, baseline, p_t):
     # F and t tails go through different incomplete-beta paths; their relative
     # error grows like eps * t^2 in the far tail (conditioning of the tail
     # probability w.r.t. the statistic), plus the eps-level absolute error of 1-p
-    tol = _C * _EPS * (1.0 + t**2) * pf + 2 * _EPS
+    tol = _C * eps * (1.0 + t**2) * pf + 2 * eps
     trigger_if(np.any(ok & (np.abs(pf - two) > tol)), "NL-GLM-004")
 
 
@@ -611,6 +678,12 @@ def check_fixed_effects(contrasts, variances, precision_weighted, fx_con, fx_var
     if not (_finite(c) and _finite(v) and _finite(fc) and _finite(fv)):
         return
     n = c.shape[0]
+    # P: voxels whose contrasts are not (sub)normal-scale noise
+    cmax = np.abs(c).max(axis=0)
+    keep = (cmax == 0) | ((cmax >= 1e-100) & (cmax <= 1e100))
+    if not keep.any():
+        return
+    c, fc, fv, v = c[:, keep], fc[keep], fv[keep], v[:, keep]
     tol_e = _C * _EPS * n * np.abs(c).max(axis=0)
     bad = np.any(fc < c.min(axis=0) - tol_e) or np.any(fc > c.max(axis=0) + tol_e)
     vmin, vmax = v.min(axis=0), v.max(axis=0)
@@ -626,13 +699,14 @@ def check_zscore_odd(con, baseline, z):
     """NL-GLM-008: z(-effect) = -z(effect) for a t contrast."""
     if con.stat_type != "t":
         return
+    eps = _eps_in(con.effect, con.variance, z)
     z = np.asarray(z, dtype=np.float64).ravel()
     c2 = _clone_contrast(con, effect=-np.asarray(con.effect, dtype=np.float64))
     z2 = np.asarray(c2.z_score(-baseline), dtype=np.float64).ravel()
     if z.shape != z2.shape:
         return
     ok = np.isfinite(z) & np.isfinite(z2)
-    tol = 1024 * _EPS * (1.0 + z**2)
+    tol = 1024 * eps * (1.0 + z**2)
     trigger_if(np.any(ok & (np.abs(z + z2) > tol)), "NL-GLM-008")
 
 
@@ -650,9 +724,12 @@ def check_orthogonalize(x0, out):
     """NL-HRF-001: orthogonalised columns are mutually orthogonal."""
     if x0 is None:
         return
+    eps = _eps_in(out)
     x = _f64(out)
     x0 = _f64(x0)
     if x.ndim != 2 or x.shape != x0.shape or not _finite(x):
+        return
+    if not _scale_ok(x0):
         return
     n, k = x.shape
     norms = np.linalg.norm(x, axis=0)
@@ -668,7 +745,7 @@ def check_orthogonalize(x0, out):
             continue
         nj = norms[prev]
         kappa = nj.max() / nj.min()
-        tol = _C * _EPS * n * n0[i] * nj * kappa
+        tol = _C * eps * n * n0[i] * nj * kappa
         bad = bad or np.any(np.abs(gram[i, prev]) > tol)
     trigger_if(bad, "NL-HRF-001")
 
@@ -693,6 +770,8 @@ def check_bold_linearity(
     onsets, durations, values = (np.asarray(a) for a in exp_condition)
     vals = _f64(values)
     ft = np.asarray(frame_times)
+    if not _scale_ok(vals):
+        return
 
     def call(on, du, va):
         return _f64(
@@ -739,6 +818,11 @@ def check_hrf_derivative(func, t_r, oversampling, time_length, onset, dt, d):
     if n < 4 or d.shape != h.shape or not (_finite(h) and _finite(d)):
         return
     if h.max() <= 0:
+        return
+    # P: the kernel holds the whole response. The kernel is sum-normalised, so a
+    # kernel truncated inside the response is renormalised differently once it is
+    # shifted and the finite difference no longer is the derivative of h.
+    if abs(h[-1]) > 1e-2 * h.max():
         return
     delta_grid = time_length / (n - 1)
     kp = int(np.argmax(h))
@@ -855,6 +939,8 @@ def check_corr_scale_invariance(cov, corr):
         return
     if np.any(np.diag(c) <= 0):
         return
+    if not _scale_ok(np.diag(c), lo=1e-150, hi=1e150):
+        return
     dt = c.dtype if c.dtype.kind == "f" else np.float64
     d = _pow2_scale(c.shape[0]).astype(dt)
     scaled = (c.astype(dt) * d[:, None]) * d[None, :]
@@ -896,8 +982,11 @@ def check_partial_correlation(covs, pcs):
     rng = np.random.default_rng(12345)  # local RNG: global state untouched
     bad = False
     for s, pc in list(zip(covs, pcs, strict=False))[:3]:
+        eps = _eps_in(s, pc)
         s = _f64(s)
         pc = _f64(pc)
+        if not _scale_ok(np.diag(s), lo=1e-150, hi=1e150):
+            continue
         p = s.shape[0]
         if p < 2 or not (_finite(s) and _finite(pc)):
             continue
@@ -911,7 +1000,7 @@ def check_partial_correlation(covs, pcs):
             while len(pairs) < 10:
                 i, j = sorted(rng.choice(p, size=2, replace=False))
                 pairs.append((int(i), int(j)))
-        tol = _C * _eps_of(s) * kappa * np.sqrt(p)
+        tol = _C * eps * kappa * np.sqrt(p)
         for i, j in pairs:
             rest = [k for k in range(p) if k not in (i, j)]
             sub = s[np.ix_([i, j], [i, j])]
@@ -931,6 +1020,8 @@ def check_vec_isometry_to_vec(sym, vec, fn):
     if s.ndim < 2 or s.shape[-1] != s.shape[-2] or not (_finite(s) and _finite(v)):
         return
     p = s.shape[-1]
+    if not _scale_ok(s):
+        return
     if np.max(np.abs(s - np.swapaxes(s, -1, -2))) > _C * _EPS * max(np.abs(s).max(), 1e-300):
         return  # P: symmetric input only
     pp = max(p, 2)
@@ -959,7 +1050,7 @@ def check_vec_isometry_to_sym(vec, sym, fn):
         return
     p = s.shape[-1]
     n = v.shape[-1]
-    if p < 2:
+    if p < 2 or not _scale_ok(v):
         return
     ed = np.zeros(n)
     ed[0] = 1.0  # entry (0, 0)
@@ -1008,6 +1099,11 @@ def check_frechet_equivariance(matrices, init, max_iter, tol, gmean, converged):
 @_guarded
 def check_tangent_centering(tangent):
     """NL-CON-007: tangent vectors average to zero at the Frechet mean."""
+    if _STATE["nonconverged"]:
+        # P: the Frechet mean iteration reached max_iter (nilearn warns): the
+        # tangent vectors are centred only at a converged mean
+        _STATE["nonconverged"] = False
+        return
     t = np.asarray(tangent, dtype=np.float64)
     if t.ndim != 3 or t.shape[0] < 2 or not _finite(t):
         return
@@ -1047,9 +1143,12 @@ def check_permuted_ols_vs_glm(tested_vars, target_vars, confounding_vars, scores
     """NL-MU-001: permutation-test t scores equal the Wald t of the OLS fit."""
     from nilearn.glm.regression import OLSModel
 
+    eps = _eps_in(tested_vars, target_vars, confounding_vars)
     x, y, s = _f64(tested_vars), _f64(target_vars), _f64(scores)
     cv = None if confounding_vars is None else _f64(confounding_vars)
     if x.ndim != 2 or y.ndim != 2 or not (_finite(x) and _finite(y)):
+        return
+    if not _scale_ok(x, y, cv):
         return
     n, nreg = x.shape
     ncov = 0 if cv is None else cv.shape[1]
@@ -1081,7 +1180,7 @@ def check_permuted_ols_vs_glm(tested_vars, target_vars, confounding_vars, scores
         yn = np.linalg.norm(y[:, idx], axis=0)
         cond = np.where(rn > 0, (yn / np.where(rn > 0, rn, 1.0)) ** 2, np.inf)
         ok = np.isfinite(ref) & np.isfinite(got) & (cond <= 1e8)
-        tol = _C * _EPS * kappa * (1 + np.abs(ref)) * cond
+        tol = _C * eps * kappa * (1 + np.abs(ref)) * cond
         bad = bad or np.any(ok & (np.abs(ref - got) > tol))
     trigger_if(bad, "NL-MU-001")
 
@@ -1162,6 +1261,8 @@ def check_smoothing(x_in, out, affine, fwhm, smooth_fn, copy_flag):
         return
     eps = _eps_of(o)
     a64, o64 = a.astype(np.float64), o.astype(np.float64)
+    if not _scale_ok(a64):
+        return
     ksum = sum(2 * int(4.0 * s + 0.5) + 1 for s in sigma if s > 0)
     # sum: every output element carries kernel_len * eps of its input magnitude
     tol_sum = _C * eps * (ksum + np.log2(max(a.size, 2))) * np.abs(a64).sum()
@@ -1219,6 +1320,8 @@ def check_resample_geometry(data, affine, out, out_affine, interpolation, fill_v
     eps = max(_eps_of(o), _EPS)
     # cubic-spline conditioning: a few ulps amplified by ~8
     tol = _C * eps * 8 * max(np.abs(vin).max(), 1e-300)
+    if o.dtype.kind in "iu":
+        tol += 1.0  # P: integer output is quantised (rounded/truncated) by the cast
     trigger_if(np.any(np.abs(got - exp) > tol), "NL-IMG-003")
 
 
@@ -1253,8 +1356,9 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     from nilearn import image as nl_image
     from nilearn.regions.signal_extraction import _trim_maps, img_to_signals_maps
 
+    eps = _eps_in(region_signals)
     s = _f64(region_signals)
-    if s.ndim != 2 or not _finite(s):
+    if s.ndim != 2 or not _finite(s) or not _scale_ok(s):
         return
     s2, _ = img_to_signals_maps(result_img, maps_img, mask_img=mask_img)
     if s2.shape != s.shape:
@@ -1273,4 +1377,4 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
         return  # P: full column rank, kappa <= 1e6
     kappa = sv[0] / sv[-1]
     diff = np.max(np.abs(_f64(s2) - s))
-    trigger_if(diff > _C * _EPS * kappa * np.linalg.norm(s), "NL-IMG-005")
+    trigger_if(diff > _C * eps * kappa * np.linalg.norm(s), "NL-IMG-005")

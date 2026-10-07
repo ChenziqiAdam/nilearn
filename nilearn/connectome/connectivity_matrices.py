@@ -210,6 +210,8 @@ def _geometric_mean(matrices, init=None, max_iter=10, tol=1e-7):
         if tol is not None and norm / gmean.size < tol:
             break
     if tol is not None and norm / gmean.size >= tol:
+        if _sc.enabled():
+            _sc.note_nonconvergence()
         warnings.warn(
             f"Maximum number of iterations {max_iter} reached without "
             f"getting to the requested tolerance level {tol}.",
@@ -670,6 +672,8 @@ class ConnectivityMeasure(TransformerMixin, NilearnBaseEstimator):
         # Store the mean
         if do_fit:
             if self.kind == "tangent":
+                if _sc.enabled():
+                    _sc.reset_nonconvergence()
                 self.mean_ = _geometric_mean(
                     covariances, max_iter=30, tol=1e-7
                 )
