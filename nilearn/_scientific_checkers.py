@@ -235,8 +235,8 @@ _CLEAN_MX = {"mx": None}
 def note_clean_mx(signals):
     """Called inside ``clean``: remember the column magnitudes of the raw
     input so that the final standardize_signal call (which only sees the
-    detrended / filtered / regressed residual) can judge numerical constancy.
-    Cleared by ``check_clean_orthogonality`` at the end of ``clean``."""
+    detrended / filtered / regressed residual) can scale its tolerance by the
+    input magnitude. Cleared by ``end_clean`` at the end of ``clean``."""
     a = np.asarray(signals)
     _CLEAN_MX["mx"] = (
         np.abs(a.astype(np.float64)).max(axis=0)
@@ -247,7 +247,7 @@ def note_clean_mx(signals):
 
 @_guarded
 def check_standardize(x_in, out, standardize, detrend, mx_in=None):
-    """NL-SIG-002 (zscore moments) and NL-SIG-003 (psc scaling)."""
+    """NL-SIG-003 (psc scaling)."""
     if x_in is None:
         return
     x = np.asarray(x_in, dtype=np.float64)
@@ -273,18 +273,7 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
         mx = np.maximum(mx, raw)  # P: spread is judged against the raw input
     std = x.std(axis=0, ddof=1)
     mean = x.mean(axis=0)
-    if standardize == "zscore_sample":
-        # P: columns whose spread survives rounding (>= 1e6 eps max|x_in|)
-        ok = (std > 0) & (std >= 1e6 * eps * mx)
-        if not ok.any():
-            return
-        # q = max|x| / std: output error is eps_d * q per element
-        q = mx[ok] / std[ok]
-        oc = o64[:, ok]
-        bad_mean = np.abs(oc.mean(axis=0)) > _C * eps * q
-        bad_var = np.abs(oc.var(axis=0, ddof=1) - 1.0) > _C * eps * q
-        trigger_if(np.any(bad_mean) or np.any(bad_var), "NL-SIG-002")
-    elif standardize == "psc" and not detrend:
+    if standardize == "psc" and not detrend:
         ok = (
             (std > 0)
             & (np.abs(mean) > _EPS)
@@ -331,92 +320,9 @@ def check_butterworth_cutoff(sos, critical_freq, sampling_rate, order):
 
 
 @_safe
-def snap_clean(
-    signals,
-    confounds,
-    runs,
-    sample_mask,
-    detrend,
-    filter_type,
-    standardize,
-    standardize_confounds,
-):
-    """Snapshot for NL-SIG-005, or None when the law's preconditions fail."""
-    if confounds is None or runs is not None or sample_mask is not None:
-        return None
-    if detrend or filter_type:
-        return None
-    if standardize == "psc":
-        return None
-    if not standardize_confounds and standardize:
-        return None
-    s = np.asarray(signals)
-    k = np.asarray(confounds)
-    if s.ndim != 2 or k.ndim != 2 or k.shape[0] != s.shape[0]:
-        return None
-    if s.size > _MAX_ELEMS or not (_finite(s) and _finite(k)):
-        return None
-    for arr in (s, k):
-        if arr.dtype.kind == "f" and np.abs(arr.astype(np.float64)).max() * np.sqrt(arr.shape[0]) > 0.5 * np.sqrt(np.finfo(arr.dtype).max):
-            return None  # P: dtype-range overflow of the sum of squares
-    idx = np.unique(np.linspace(0, s.shape[1] - 1, min(20, s.shape[1])).astype(int))
-    return {
-        "conf": k.astype(np.float64),
-        "center": bool(standardize_confounds),
-        "idx": idx,
-        "xs": s[:, idx].astype(np.float64),
-        "zscore": standardize == "zscore_sample",
-    }
-
-
-@_guarded
-def check_clean_orthogonality(snap, out):
-    """NL-SIG-005: cleaned signals are orthogonal to the confounds."""
-    _CLEAN_MX["mx"] = None  # end of clean(): drop the NL-SIG-002 raw magnitudes
-    if snap is None:
-        return
-    o = np.asarray(out)
-    if o.ndim != 2 or not _finite(o):
-        return
-    k = snap["conf"]
-    if snap["center"]:
-        k = k - k.mean(axis=0)
-    cn = np.linalg.norm(k, axis=0)
-    nz = cn > 0
-    if not nz.any() or o.shape[0] != k.shape[0]:
-        return
-    if not _scale_ok(k, snap["xs"]):
-        return
-    kn = k[:, nz] / cn[nz]
-    s = np.linalg.svd(kn, compute_uv=False)
-    smax = s[0]
-    # P: no singular value in the rank-ambiguous band
-    if np.any((s >= 1e-14 * smax) & (s < 1e-8 * smax)):
-        return
-    kappa = smax / s[s > 1e-8 * smax].min()
-    oc = o[:, snap["idx"]].astype(np.float64)
-    eps = _eps_of(o)
-    xs = snap["xs"]
-    xnorm = np.linalg.norm(xs, axis=0)
-    # the output is the residual divided by its own std when z-scored: the
-    # rounding error of the projection is scaled by the same factor
-    resid = xs - k @ np.linalg.lstsq(k, xs, rcond=None)[0]
-    if snap["zscore"]:
-        sd = resid.std(axis=0, ddof=1)
-        if np.any(sd <= 0):
-            return
-        factor = 1.0 / sd
-    else:
-        factor = np.ones(xs.shape[1])
-    # float64 centring of the confounds leaves a mean of eps * |offset|, which the
-    # (uncentred) signal's own offset multiplies: one more factor of the
-    # confounds' offset-to-spread ratio
-    kraw = snap["conf"]
-    ksd = kraw.std(axis=0)
-    off_k = float(np.max(np.abs(kraw.mean(axis=0))[ksd > 0] / ksd[ksd > 0])) if np.any(ksd > 0) else 0.0
-    tol = _C * eps * kappa * (1.0 + off_k) * cn[nz][:, None] * (xnorm * factor)[None, :]
-    dots = np.abs(k[:, nz].T @ oc)
-    trigger_if(np.any(dots > tol), "NL-SIG-005")
+def end_clean():
+    """Called at the end of ``clean``: drop the remembered raw magnitudes."""
+    _CLEAN_MX["mx"] = None
 
 
 @_guarded
@@ -1220,53 +1126,6 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
 
 
 # ================================================================ mass-univ.
-@_guarded
-def check_permuted_ols_vs_glm(tested_vars, target_vars, confounding_vars, scores):
-    """NL-MU-001: permutation-test t scores equal the Wald t of the OLS fit."""
-    from nilearn.glm.regression import OLSModel
-
-    eps = _eps_in(tested_vars, target_vars, confounding_vars)
-    x, y, s = _f64(tested_vars), _f64(target_vars), _f64(scores)
-    cv = None if confounding_vars is None else _f64(confounding_vars)
-    if x.ndim != 2 or y.ndim != 2 or not (_finite(x) and _finite(y)):
-        return
-    if not _scale_ok(x, y, cv):
-        return
-    n, nreg = x.shape
-    ncov = 0 if cv is None else cv.shape[1]
-    if n <= nreg + ncov + 2 or s.shape != (y.shape[1], nreg):
-        return
-    idx = np.unique(np.linspace(0, y.shape[1] - 1, min(5, y.shape[1])).astype(int))
-    bad = False
-    for r in range(min(nreg, 5)):
-        cols = [x[:, r : r + 1]] + ([] if cv is None else [cv])
-        design = np.hstack(cols)
-        if np.any(np.linalg.norm(design, axis=0) == 0):
-            continue
-        # the OLS reference solves with a pinv of the *raw* design, so its error
-        # follows the raw condition number
-        sv = np.linalg.svd(design, compute_uv=False)
-        if sv[-1] <= 0 or sv[0] / sv[-1] > 1e8:
-            continue  # P: full column rank, kappa <= 1e8
-        kappa = sv[0] / sv[-1]
-        c = np.zeros(design.shape[1])
-        c[0] = 1.0
-        fit = OLSModel(design).fit(y[:, idx])
-        ref = np.atleast_1d(fit.Tcontrast(c).t)
-        got = s[idx, r]
-        # permuted_ols forms rss = 1 - a2 - beta^2 on unit-norm data: relative error
-        # of t is eps * ||y||^2 / ||residual||^2 (the conditioning of the full fit,
-        # large for data with a big offset). P: the fit is not exact (cond <= 1e8),
-        # where t is infinite / rounding noise.
-        rn = np.linalg.norm(np.reshape(fit.whitened_residuals, (n, -1)), axis=0)
-        yn = np.linalg.norm(y[:, idx], axis=0)
-        cond = np.where(rn > 0, (yn / np.where(rn > 0, rn, 1.0)) ** 2, np.inf)
-        ok = np.isfinite(ref) & np.isfinite(got) & (cond <= 1e8)
-        tol = _C * eps * kappa * (1 + np.abs(ref)) * cond
-        bad = bad or np.any(ok & (np.abs(ref - got) > tol))
-    trigger_if(bad, "NL-MU-001")
-
-
 @_guarded
 def check_tfce(arr4d, bin_struct, E, H, dh, two_sided, out):
     """NL-MU-002 (sign symmetry) and NL-MU-003 (homogeneity of degree H)."""

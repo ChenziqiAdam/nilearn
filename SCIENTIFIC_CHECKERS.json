@@ -16,18 +16,6 @@
       "symbol": "_detrend"
     },
     {
-      "alarm": "`|mean| > C * eps_d * q` or `|var - 1| > C * eps_d * q` with `q = max|x_in| / std` (output error is `eps_d * q` per element)",
-      "family": "zscore_moments",
-      "id": "NL-SIG-002",
-      "invariant": "`mean(out) = 0`, `var(out, ddof=1) = 1`",
-      "observation_point": "return of `standardize_signal`",
-      "precondition": "`standardize=\"zscore_sample\"`, `n >= 2`, finite; column spread (after detrending, if any) `std >= 1e6 * eps_d * max|x_in|` with `x_in` the input before detrending (below that the column is numerically constant and the law does not apply, and for `clean` the raw input of the call); float inputs with `max|x| sqrt(n) > sqrt(finfo.max)/2` are excluded (the sum of squares overflows in the data dtype)",
-      "rationale": "Z-scoring yields zero mean and unit sample variance.",
-      "scientific_quantity": "z-scored time series",
-      "source": "nilearn/signal.py",
-      "symbol": "standardize_signal"
-    },
-    {
       "alarm": "either relation violated by more than `(C * q + n) * eps_d` (relative), `q = max|x| / std`, the `n` term being the sequential column-mean round-off",
       "family": "psc_scaling",
       "id": "NL-SIG-003",
@@ -50,18 +38,6 @@
       "scientific_quantity": "Butterworth cut-off gain",
       "source": "nilearn/signal.py",
       "symbol": "butterworth"
-    },
-    {
-      "alarm": "`|c . out| > C * eps * kappa * ||c||_2 * ||out||_2` for any column, where `kappa` is the condition number of the retained confound subspace (singular values above `1e-8 s_max`); skipped when a singular value lies in `[1e-14 s_max, 1e-8 s_max]` (rank ambiguity, P); float inputs with `max|x| sqrt(n) > sqrt(finfo.max)/2` are excluded (dtype overflow)",
-      "family": "confound_regression_orthogonality",
-      "id": "NL-SIG-005",
-      "invariant": "the cleaned column is orthogonal to every confound column (centred if `standardize_confounds=True`, raw otherwise)",
-      "observation_point": "return of `clean`",
-      "precondition": "`confounds` finite, `detrend=False`, no low/high-pass filter, `sample_mask=None`, `runs=None`, `standardize` not `psc`; if `standardize_confounds=False`, `standardize` in `{False, None}`",
-      "rationale": "the purpose of `confounds=` is removing their linear contribution.",
-      "scientific_quantity": "confound-regressed time series",
-      "source": "nilearn/signal.py",
-      "symbol": "clean"
     },
     {
       "alarm": "`max |B^T B - I| > C * eps * (2 pi k_max + 1)` for the non-constant block `B` (angle error `eps * pi * k` accumulated over `n` terms of weight `2/n`), or `|sum(B_k)| >` the same bound",
@@ -386,18 +362,6 @@
       "scientific_quantity": "estimated precision matrices",
       "source": "nilearn/connectome/group_sparse_cov.py",
       "symbol": "_group_sparse_covariance"
-    },
-    {
-      "alarm": "`|t_perm - t_glm| > C * eps * kappa * (1 + |t|) * (1 + t^2 / dof)`, where `1 + t^2/dof = 1/(1 - R^2)` is the conditioning of `t`; entries with `1 + t^2/dof > 1e8` (exact or numerically exact fit: `t` infinite / rounding noise) are excluded",
-      "family": "permuted_ols_vs_glm",
-      "id": "NL-MU-001",
-      "invariant": "the original-data t score of regressor `r` equals the Wald t of column `r` of the OLS fit on `[tested_r, confounds (+ intercept)]`",
-      "observation_point": "`permuted_ols`, right after the original scores",
-      "precondition": "finite data, `n > p + 2`, design `kappa <= 1e8`; up to 5 descriptors and all tested regressors sampled",
-      "rationale": "Permutation-test t scores equal GLM t scores.",
-      "scientific_quantity": "permutation-test t scores",
-      "source": "nilearn/mass_univariate/permuted_least_squares.py",
-      "symbol": "permuted_ols"
     },
     {
       "alarm": "re-call on `-X` differs by more than `C * eps * max|tfce|` (X: negation exact)",

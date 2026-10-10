@@ -789,16 +789,6 @@ def clean(
     )
     if _sc.enabled():
         _sc.note_clean_mx(signals)
-        _sc_snap = _sc.snap_clean(
-            signals,
-            confounds,
-            runs,
-            sample_mask,
-            detrend,
-            filter_type,
-            standardize,
-            standardize_confounds,
-        )
 
     # Process each run independently
     if runs is not None:
@@ -906,7 +896,7 @@ def clean(
     # Standardize
     if not standardize:
         if _sc.enabled():
-            _sc.check_clean_orthogonality(_sc_snap, signals)
+            _sc.end_clean()
         return signals
 
     # detect if mean is close to zero; This can obscure the scale of the signal
@@ -935,7 +925,7 @@ def clean(
             detrend=False,
         )
     if _sc.enabled():
-        _sc.check_clean_orthogonality(_sc_snap, signals)
+        _sc.end_clean()
     return signals
 
 

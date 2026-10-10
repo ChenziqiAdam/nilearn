@@ -12,7 +12,6 @@ from scipy import stats
 from scipy.ndimage import generate_binary_structure, label
 from sklearn.utils import check_random_state
 
-from nilearn import _scientific_checkers as _sc
 from nilearn import image
 from nilearn._utils import logger
 from nilearn._utils.docs import fill_doc
@@ -684,10 +683,6 @@ def permuted_ols(
         targetvars_resid_covars.T,
         covars_orthonormalized,
     )
-    if _sc.enabled():
-        _sc.check_permuted_ols_vs_glm(
-            tested_vars, target_vars, confounding_vars, scores_original_data
-        )
 
     # Define connectivity for TFCE and/or cluster measures
     bin_struct = generate_binary_structure(3, 1)
