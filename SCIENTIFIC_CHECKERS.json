@@ -21,7 +21,7 @@
       "id": "NL-SIG-002",
       "invariant": "`mean(out) = 0`, `var(out, ddof=1) = 1`",
       "observation_point": "return of `standardize_signal`",
-      "precondition": "`standardize=\"zscore_sample\"`, `n >= 2`, finite; column spread (after detrending, if any) `std >= 1e6 * eps_d * max|x_in|` with `x_in` the input before detrending (below that the column is numerically constant and the law does not apply)",
+      "precondition": "`standardize=\"zscore_sample\"`, `n >= 2`, finite; column spread (after detrending, if any) `std >= 1e6 * eps_d * max|x_in|` with `x_in` the input before detrending (below that the column is numerically constant and the law does not apply, and for `clean` the raw input of the call); float inputs with `max|x| sqrt(n) > sqrt(finfo.max)/2` are excluded (the sum of squares overflows in the data dtype)",
       "rationale": "Z-scoring yields zero mean and unit sample variance.",
       "scientific_quantity": "z-scored time series",
       "source": "nilearn/signal.py",
@@ -52,7 +52,7 @@
       "symbol": "butterworth"
     },
     {
-      "alarm": "`|c . out| > C * eps * kappa * ||c||_2 * ||out||_2` for any column, where `kappa` is the condition number of the retained confound subspace (singular values above `1e-8 s_max`); skipped when a singular value lies in `[1e-14 s_max, 1e-8 s_max]` (rank ambiguity, P)",
+      "alarm": "`|c . out| > C * eps * kappa * ||c||_2 * ||out||_2` for any column, where `kappa` is the condition number of the retained confound subspace (singular values above `1e-8 s_max`); skipped when a singular value lies in `[1e-14 s_max, 1e-8 s_max]` (rank ambiguity, P); float inputs with `max|x| sqrt(n) > sqrt(finfo.max)/2` are excluded (dtype overflow)",
       "family": "confound_regression_orthogonality",
       "id": "NL-SIG-005",
       "invariant": "the cleaned column is orthogonal to every confound column (centred if `standardize_confounds=True`, raw otherwise)",
@@ -112,7 +112,7 @@
       "symbol": "OLSModel.fit"
     },
     {
-      "alarm": "`|R^2 - (1 - SSE/(n var Y))| > C * eps * (kappa_eff + mean(Y)^2 / var(Y))` or `R^2` outside `[-tol, 1+tol]` (up to 50 columns sampled)",
+      "alarm": "`|R^2 - (1 - SSE/(n var Y))| > C * eps * (kappa_eff + mean(Y)^2 / var(Y))` with `eps` the largest unit round-off among the design, data and residual dtypes or `R^2` outside `[-tol, 1+tol]` (up to 50 columns sampled)",
       "family": "r_square_decomposition",
       "id": "NL-GLM-002",
       "invariant": "`R^2 = 1 - SSE / (n var(Y))` and `0 <= R^2 <= 1`",
@@ -376,7 +376,7 @@
       "symbol": "_group_sparse_covariance"
     },
     {
-      "alarm": "asymmetry `> C eps ||Omega||` or `lambda_min <= C * eps * p * lambda_max`",
+      "alarm": "asymmetry `> C eps ||Omega||`, a non-positive diagonal, or `lambda_min <= C * eps * p * lambda_max` of the unit-diagonal rescaling `D^-1/2 Omega D^-1/2`",
       "family": "group_sparse_precision_spd",
       "id": "NL-CON-009",
       "invariant": "each `Omega[..., k]` is symmetric with `lambda_min > 0`",
@@ -477,7 +477,7 @@
       "id": "NL-IMG-003",
       "invariant": "the value of output voxel `v` equals the input interpolated (same order) at `inv(A_in) A_out v` using the *returned* affine `A_out`",
       "observation_point": "return of `resample_img`",
-      "precondition": "resampling actually performed, 3-D (or first volume of 4-D), sampled interior output voxels whose source coordinate lies at least one voxel inside the input (and `>= 1e-6` from a half-integer for `nearest`), integer outputs are quantised by the cast (one unit allowed)",
+      "precondition": "resampling actually performed, 3-D (or first volume of 4-D), sampled interior output voxels whose source coordinate lies at least one voxel inside the input (and `>= 1e-6` from a half-integer for `nearest`), integer outputs are quantised by the cast (one unit allowed), and the expected value is saturated to the integer dtype range",
       "rationale": "Resampling preserves world-space geometry.",
       "scientific_quantity": "resampled image geometry",
       "source": "nilearn/image/resampling.py",

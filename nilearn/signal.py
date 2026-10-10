@@ -788,6 +788,7 @@ def clean(
         signals, runs, confounds, sample_mask, ensure_finite
     )
     if _sc.enabled():
+        _sc.note_clean_mx(signals)
         _sc_snap = _sc.snap_clean(
             signals,
             confounds,

@@ -223,6 +223,23 @@ def col_absmax(x):
     return np.abs(a.astype(np.float64)).max(axis=0)
 
 
+_CLEAN_MX = {"mx": None}
+
+
+@_safe
+def note_clean_mx(signals):
+    """Called inside ``clean``: remember the column magnitudes of the raw
+    input so that the final standardize_signal call (which only sees the
+    detrended / filtered / regressed residual) can judge numerical constancy.
+    Cleared by ``check_clean_orthogonality`` at the end of ``clean``."""
+    a = np.asarray(signals)
+    _CLEAN_MX["mx"] = (
+        np.abs(a.astype(np.float64)).max(axis=0)
+        if a.ndim == 2 and a.size <= _MAX_ELEMS
+        else None
+    )
+
+
 @_guarded
 def check_standardize(x_in, out, standardize, detrend, mx_in=None):
     """NL-SIG-002 (zscore moments) and NL-SIG-003 (psc scaling)."""
@@ -239,9 +256,16 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
         return
     eps = _eps_of(o)
     o64 = o.astype(np.float64)
+    # P: the library forms sum(x^2) in the data's own dtype; beyond
+    # sqrt(finfo.max / n) that sum overflows (float32: ~1e18), not a defect
+    if o.dtype.kind == "f" and np.abs(x).max() * np.sqrt(x.shape[0]) > 0.5 * np.sqrt(np.finfo(o.dtype).max):
+        return
     # error scale is the magnitude of the *input* (before detrending), not of
     # the possibly detrended-to-rounding-noise column
     mx = np.abs(x).max(axis=0) if mx_in is None else np.asarray(mx_in)
+    raw = _CLEAN_MX["mx"]
+    if raw is not None and raw.shape == mx.shape:
+        mx = np.maximum(mx, raw)  # P: spread is judged against the raw input
     std = x.std(axis=0, ddof=1)
     mean = x.mean(axis=0)
     if standardize == "zscore_sample":
@@ -323,6 +347,9 @@ def snap_clean(
         return None
     if s.size > _MAX_ELEMS or not (_finite(s) and _finite(k)):
         return None
+    for arr in (s, k):
+        if arr.dtype.kind == "f" and np.abs(arr.astype(np.float64)).max() * np.sqrt(arr.shape[0]) > 0.5 * np.sqrt(np.finfo(arr.dtype).max):
+            return None  # P: dtype-range overflow of the sum of squares
     idx = np.unique(np.linspace(0, s.shape[1] - 1, min(20, s.shape[1])).astype(int))
     return {
         "conf": k.astype(np.float64),
@@ -336,6 +363,7 @@ def snap_clean(
 @_guarded
 def check_clean_orthogonality(snap, out):
     """NL-SIG-005: cleaned signals are orthogonal to the confounds."""
+    _CLEAN_MX["mx"] = None  # end of clean(): drop the NL-SIG-002 raw magnitudes
     if snap is None:
         return
     o = np.asarray(out)
@@ -521,7 +549,8 @@ def check_r_square(model, xw, wy, wresid, r2):
     # prediction error is eps * kappa * ||y|| (backward-stable LS), i.e. relative to
     # the spread eps * kappa * sqrt(1 + mean^2/var): the design conditioning and the
     # data offset multiply. Factor 4: SSE and var each accumulate that error.
-    eps = max(_EPS, _eps_of(np.asarray(wy)))
+    # the pinv is formed in the design's dtype: its round-off enters the same way
+    eps = _eps_in(xw, wy, wresid)
     tol = 4 * _C * eps * (1.0 + kappa * np.sqrt(1.0 + mu**2 / np.where(ok, var, 1.0)))
     # P: the tolerance is smaller than the range of R^2 (a spread that is rounding
     # noise of a huge offset leaves R^2 undetermined)
@@ -1131,10 +1160,18 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
     bad = False
     for i in range(k):
         m = om[..., i]
-        w = np.linalg.eigvalsh((m + m.T) / 2.0)
         scale = max(np.abs(m).max(), 1e-300)
         bad = bad or np.max(np.abs(m - m.T)) > _C * _EPS * scale
-        bad = bad or w[0] <= _C * _EPS * p * w[-1]
+        # definiteness is scale free: test the unit-diagonal rescaling D^-1/2 M D^-1/2
+        # (P: legitimate precisions of variables in very different units have a
+        # condition number beyond 1/(C eps p), though they are exactly SPD)
+        d = np.diagonal(m)
+        if not np.all(d > 0):
+            bad = True
+            continue
+        dm = 1.0 / np.sqrt(d)
+        wn = np.linalg.eigvalsh((m + m.T) / 2.0 * np.outer(dm, dm))
+        bad = bad or wn[0] <= _C * _EPS * p * wn[-1]
     trigger_if(bad, "NL-CON-009")
     if precisions_init is None:
         amax = compute_alpha_max(_f64(emp_covs), np.asarray(n_samples, dtype=np.float64))[0]
@@ -1323,6 +1360,9 @@ def check_resample_geometry(data, affine, out, out_affine, interpolation, fill_v
     exp = map_coordinates(vin, src[:, inside], order=order, mode="constant", cval=fill_value)
     if clip:
         exp = np.clip(exp, min(np.nanmin(d), 0), max(np.nanmax(d), 0))
+    if o.dtype.kind in "iu":
+        info = np.iinfo(o.dtype)  # P: the cast saturates cubic over/undershoot
+        exp = np.clip(exp, info.min, info.max)
     got = vout[tuple(ijk[:, inside])].astype(np.float64)
     eps = max(_eps_of(o), _EPS)
     # cubic-spline conditioning: a few ulps amplified by ~8
