@@ -436,12 +436,12 @@
       "symbol": "smooth_array"
     },
     {
-      "alarm": "difference `> C * eps_d * max|x| * 8` (cubic spline conditioning) from `scipy.ndimage.map_coordinates`, with clipping and fill applied as documented",
+      "alarm": "difference `> C * eps_d * max|x| * 8 + 3 * k * dx * g` (cubic spline conditioning, plus the world-coordinate round-off of the source coordinate: `dx = C * eps64 * ||inv(A_in[:3,:3])||_inf * W` voxels with `W` the sum of the translation magnitudes and the output grid extent, `g` the largest per-voxel change of the input, `k = 2` for cubic and 1 otherwise) from `scipy.ndimage.map_coordinates`, with clipping and fill applied as documented",
       "family": "resample_world_geometry",
       "id": "NL-IMG-003",
       "invariant": "the value of output voxel `v` equals the input interpolated (same order) at `inv(A_in) A_out v` using the *returned* affine `A_out`",
       "observation_point": "return of `resample_img`",
-      "precondition": "resampling actually performed, 3-D (or first volume of 4-D), sampled interior output voxels whose source coordinate lies at least one voxel inside the input (and `>= 1e-6` from a half-integer for `nearest`), integer outputs are quantised by the cast (one unit allowed), and the expected value is saturated to the integer dtype range",
+      "precondition": "resampling actually performed, 3-D (or first volume of 4-D), sampled interior output voxels whose source coordinate lies at least one voxel inside the input (and farther than `max(1e-6, dx)` from a half-integer for `nearest`), integer outputs are quantised by the cast (one unit allowed), and the expected value is saturated to the integer dtype range",
       "rationale": "Resampling preserves world-space geometry.",
       "scientific_quantity": "resampled image geometry",
       "source": "nilearn/image/resampling.py",

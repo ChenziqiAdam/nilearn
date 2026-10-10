@@ -1252,8 +1252,18 @@ def check_resample_geometry(data, affine, out, out_affine, interpolation, fill_v
     )[:3]
     shp = np.array(vin.shape)[:, None]
     inside = np.all((src >= 1) & (src <= shp - 2), axis=0)
+    # float64 round-off of inv(A_in) @ A_out @ v grows with the world-coordinate
+    # magnitude (translations and the extent of the output grid)
+    ai = np.asarray(affine, dtype=np.float64)
+    ao = np.asarray(out_affine, dtype=np.float64)
+    world = (
+        np.abs(ai[:3, 3]).max()
+        + np.abs(ao[:3, 3]).max()
+        + np.abs(ao[:3, :3]).sum(1).max() * max(vout.shape)
+    )
+    dx = _C * _EPS * np.linalg.norm(np.linalg.inv(ai[:3, :3]), np.inf) * world
     if order == 0:
-        inside &= np.all(np.abs(src - np.floor(src) - 0.5) > 1e-6, axis=0)
+        inside &= np.all(np.abs(src - np.floor(src) - 0.5) > max(1e-6, dx), axis=0)
     if not inside.any():
         return
     exp = map_coordinates(vin, src[:, inside], order=order, mode="constant", cval=fill_value)
@@ -1268,6 +1278,9 @@ def check_resample_geometry(data, affine, out, out_affine, interpolation, fill_v
     tol = _C * eps * 8 * max(np.abs(vin).max(), 1e-300)
     if o.dtype.kind in "iu":
         tol += 1.0  # P: integer output is quantised (rounded/truncated) by the cast
+    # source-coordinate error dx (voxels) times the largest per-voxel change
+    grad = max(np.abs(np.diff(vin, axis=a)).max() for a in range(3))
+    tol += dx * grad * 3 * (2 if order == 3 else 1)
     trigger_if(np.any(np.abs(got - exp) > tol), "NL-IMG-003")
 
 
