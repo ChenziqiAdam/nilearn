@@ -778,6 +778,11 @@ def check_hrf_derivative(func, t_r, oversampling, time_length, onset, dt, d):
     # shifted and the finite difference no longer is the derivative of h.
     if abs(h[-1]) > 1e-2 * h.max() or abs(h[0]) > 1e-2 * h.max():
         return
+    # P: the kernel resolves the response peak (at least three samples above half
+    # maximum). On an undersampled kernel the per-sample sum normalisation
+    # depends on the onset and adds a term proportional to h to the difference.
+    if np.count_nonzero(h >= 0.5 * h.max()) < 3:
+        return
     delta_grid = time_length / (n - 1)
     kp = int(np.argmax(h))
     if kp >= n - 2:
@@ -1324,6 +1329,11 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     maps_raw = nl_image.get_data(nl_image.check_niimg_4d(maps_img))
     # the least-squares products run in the promoted dtype of signals and maps
     eps = _eps_in(region_signals, maps_raw, nl_image.get_data(result_img))
+    rd = np.asarray(nl_image.get_data(result_img)).dtype
+    if rd.kind in "iu":
+        mabs = np.abs(_f64(maps_raw)).reshape(-1, s.shape[1])
+        if (np.abs(s) @ mabs.T).max() > np.iinfo(rd).max:
+            return  # P: the integer product fits its dtype (no wraparound)
     maps = _f64(maps_raw)
     if mask_img is not None:
         mk = np.asarray(nl_image.get_data(nl_image.check_niimg_3d(mask_img)))
