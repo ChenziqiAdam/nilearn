@@ -198,7 +198,12 @@ def check_detrend(out, l1):
         return
     # float32 input stays float32 inside _detrend; each output element carries a
     # few ulps of the *input* magnitude, hence C * eps_d * sum|x_in|.
-    tol = _C * _eps_of(out) * l1
+    # the column mean / slope are sequential reductions over n samples: their
+    # round-off grows like n * eps_d (P: beyond n * eps_d ~ 1e-2 no statement)
+    eps_d = _eps_of(out)
+    if (_C + n) * eps_d > 1e-2:
+        return
+    tol = (_C + n) * eps_d * l1
     r = np.arange(n, dtype=np.float64)
     r -= r.mean()
     r /= np.sqrt((r**2).sum())
@@ -290,9 +295,13 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
         oc = o64[:, ok]
         am = np.abs(mean[ok])
         # output elements carry eps_d * 100 * max|x| / |mean| of error
-        tol_mean = _C * eps * 100.0 * mx[ok] / am
+        # the library's column mean is a sequential reduction: relative error n*eps_d
+        nn = x.shape[0]
+        if (_C + nn) * eps > 1e-2:
+            return  # P: n * eps_d small enough for a meaningful statement
+        tol_mean = (_C + nn) * eps * 100.0 * mx[ok] / am
         want = 100.0 * std[ok] / am
-        rel = _C * eps * mx[ok] / std[ok]
+        rel = (_C * mx[ok] / std[ok] + nn) * eps
         got = oc.std(axis=0, ddof=1)
         bad = np.any(np.abs(oc.mean(axis=0)) > tol_mean) or np.any(
             np.abs(got - want) > rel * want
@@ -647,7 +656,10 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
     from nilearn.glm._utils import pad_contrast
     from nilearn.glm.contrasts import compute_contrast
 
+    cv0 = np.asarray(con_val)
     cv = np.asarray(con_val, dtype=np.float64)
+    # round-off of the fit: its design / result dtype (the contrast keeps it)
+    eps = _eps_in(con.effect, con.variance, cv0)
     if stat_type == "t":
         if cv.ndim != 1:
             return
@@ -659,19 +671,19 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
             return
         bad = False
         for a in (2.0, -1.0):
-            c2 = compute_contrast(labels, results, a * cv, "t")
+            c2 = compute_contrast(labels, results, a * cv0, "t")
             s2 = _clone_contrast(c2).stat()
             scale = np.maximum(np.abs(base), 1.0)
             bad = bad or np.any(
-                ok & (np.abs(s2 - np.sign(a) * base) > 8 * _EPS * scale)
+                ok & (np.abs(s2 - np.sign(a) * base) > 8 * eps * scale)
             )
             e2 = np.asarray(c2.effect, dtype=np.float64)
             bad = bad or np.any(
-                ok & (np.abs(e2 - a * e0).ravel() > 8 * _EPS * np.abs(a * e0).ravel())
+                ok & (np.abs(e2 - a * e0).ravel() > 8 * eps * np.abs(a * e0).ravel())
             )
             v2 = np.asarray(c2.variance, dtype=np.float64)
             bad = bad or np.any(
-                ok & (np.abs(v2 - a * a * v0).ravel() > 8 * _EPS * a * a * v0.ravel())
+                ok & (np.abs(v2 - a * a * v0).ravel() > 8 * eps * a * a * v0.ravel())
             )
         trigger_if(bad, "NL-GLM-005")
     elif stat_type == "F":
@@ -686,8 +698,8 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
             if not np.isfinite(k):
                 return
             kappa = max(kappa, k)
-        if kappa > 1e8:
-            return
+        if kappa > 1e8 or _C * eps * kappa > 0.1:
+            return  # P: kappa where the F statistic still has digits
         base = _clone_contrast(con).stat()
         v0 = np.asarray(con.variance, dtype=np.float64).ravel()
         ok = np.isfinite(base) & (v0 > 1e-40)
@@ -699,7 +711,7 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
             if np.iscomplexobj(c2.effect):
                 return
             s2 = _clone_contrast(c2).stat()
-            tol = _C * _EPS * kappa * np.maximum(np.abs(base), 1.0)
+            tol = _C * eps * kappa * np.maximum(np.abs(base), 1.0)
             bad = bad or np.any(ok & (np.abs(s2 - base) > tol))
         trigger_if(bad, "NL-GLM-006")
 
@@ -947,6 +959,9 @@ def check_cluster_extent(pre, out, k):
     bad = False
     for v in range(pre.shape[3]):
         p, o = pre[..., v], out[..., v]
+        # (the library filters in the output's dtype, the snapshot may be float)
+        if o.dtype.kind == "i" and bool((p == np.iinfo(o.dtype).min).any()):
+            continue  # P: -x is not representable at the signed-integer minimum
         keep = np.zeros(p.shape, dtype=bool)
         for sign in (1, -1):
             lab, nl = label((p * sign) > 0, st)
@@ -978,6 +993,15 @@ def check_corr_scale_invariance(cov, corr):
     if not _scale_ok(np.diag(c), lo=1e-150, hi=1e150):
         return
     dt = c.dtype if c.dtype.kind == "f" else np.float64
+    # P: the 2^k transform (factor 16) neither overflows nor reaches the
+    # subnormal range of the matrix dtype
+    ac = np.abs(c.astype(np.float64))
+    nz = ac[ac > 0]
+    if nz.size and (
+        ac.max() * 16.0 > 0.5 * float(np.finfo(dt).max)
+        or nz.min() / 16.0 < 1e4 * float(np.finfo(dt).tiny)
+    ):
+        return
     d = _pow2_scale(c.shape[0]).astype(dt)
     scaled = (c.astype(dt) * d[:, None]) * d[None, :]
     corr2 = np.asarray(cov_to_corr(scaled))
@@ -1171,7 +1195,21 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
             continue
         dm = 1.0 / np.sqrt(d)
         wn = np.linalg.eigvalsh((m + m.T) / 2.0 * np.outer(dm, dm))
-        bad = bad or wn[0] <= _C * _EPS * p * wn[-1]
+        # P: when the unit-diagonal empirical covariance is itself numerically
+        # singular, the smallest eigenvalue of its inverse is unresolved:
+        # only genuine indefiniteness is then an alarm
+        thr = _C * _EPS * p * wn[-1]
+        ec = _f64(emp_covs)
+        singular_in = False
+        if ec.ndim == 3 and ec.shape[:2] == (p, p) and ec.shape[2] == k:
+            de = np.diagonal(ec[..., i])
+            if not (np.all(de > 0) and _finite(ec[..., i])):
+                singular_in = True
+            else:
+                de = 1.0 / np.sqrt(de)
+                we = np.linalg.eigvalsh(ec[..., i] * np.outer(de, de))
+                singular_in = we[0] <= _C * _EPS * p * we[-1]
+        bad = bad or (wn[0] < -thr if singular_in else wn[0] <= thr)
     trigger_if(bad, "NL-CON-009")
     if precisions_init is None:
         amax = compute_alpha_max(_f64(emp_covs), np.asarray(n_samples, dtype=np.float64))[0]
@@ -1293,6 +1331,8 @@ def check_smoothing(x_in, out, affine, fwhm, smooth_fn, copy_flag):
         return
     a = np.asarray(x_in)
     o = np.asarray(out)
+    if a.dtype.kind == "b" or o.dtype.kind == "b":
+        return  # P: numeric intensities (bool is not an image dtype)
     if a.shape != o.shape or a.ndim not in (3, 4) or not (_finite(a) and _finite(o)):
         return
     fw = np.asarray([fwhm]).ravel()
@@ -1403,14 +1443,16 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     from nilearn import image as nl_image
     from nilearn.regions.signal_extraction import _trim_maps, img_to_signals_maps
 
-    eps = _eps_in(region_signals)
     s = _f64(region_signals)
     if s.ndim != 2 or not _finite(s) or not _scale_ok(s):
         return
     s2, _ = img_to_signals_maps(result_img, maps_img, mask_img=mask_img)
     if s2.shape != s.shape:
         return
-    maps = _f64(nl_image.get_data(nl_image.check_niimg_4d(maps_img)))
+    maps_raw = nl_image.get_data(nl_image.check_niimg_4d(maps_img))
+    # the least-squares products run in the promoted dtype of signals and maps
+    eps = _eps_in(region_signals, maps_raw, nl_image.get_data(result_img))
+    maps = _f64(maps_raw)
     if mask_img is not None:
         mk = np.asarray(nl_image.get_data(nl_image.check_niimg_3d(mask_img)))
         maps, mk2, _ = _trim_maps(maps, mk, keep_empty=True)
