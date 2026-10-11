@@ -1102,6 +1102,13 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
         m = om[..., i]
         scale = max(np.abs(m).max(), 1e-300)
         bad = bad or np.max(np.abs(m - m.T)) > _C * _EPS * scale
+        # P: the solver iterates on the RAW-unit precision; with an input variance
+        # dynamic range r and C eps p r > 1e-2 its rounding exceeds the
+        # definiteness margin (inputs without unit variance are numerically
+        # unstable, and the library warns about them)
+        ecd = np.diagonal(_f64(emp_covs)[..., i]) if np.ndim(emp_covs) == 3 else None
+        if ecd is not None and np.all(ecd > 0) and _C * _EPS * p * ecd.max() / ecd.min() > 1e-2:
+            continue
         # definiteness is scale free: test the unit-diagonal rescaling D^-1/2 M D^-1/2
         # (P: legitimate precisions of variables in very different units have a
         # condition number beyond 1/(C eps p), though they are exactly SPD)

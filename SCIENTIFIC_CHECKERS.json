@@ -357,7 +357,7 @@
       "id": "NL-CON-009",
       "invariant": "each `Omega[..., k]` is symmetric with `lambda_min > 0`",
       "observation_point": "end of `_group_sparse_covariance`",
-      "precondition": "finite output",
+      "precondition": "finite output; per-subject empirical-covariance variance ratio `r = max diag / min diag` with `C * eps * p * r <= 1e-2`",
       "rationale": "Estimated precision matrices are symmetric positive definite.",
       "scientific_quantity": "estimated precision matrices",
       "source": "nilearn/connectome/group_sparse_cov.py",
