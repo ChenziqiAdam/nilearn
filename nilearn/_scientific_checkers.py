@@ -656,6 +656,8 @@ def check_zscore_odd(con, baseline, z):
     """NL-GLM-008: z(-effect) = -z(effect) for a t contrast."""
     if con.stat_type != "t":
         return
+    if not np.issubdtype(np.asarray(con.effect).dtype, np.inexact):
+        return  # P: floating-point effect (integer effects overflow in -effect)
     eps = _eps_in(con.effect, con.variance, z)
     z = np.asarray(z, dtype=np.float64).ravel()
     c2 = _clone_contrast(con, effect=-np.asarray(con.effect, dtype=np.float64))

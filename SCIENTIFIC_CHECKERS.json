@@ -165,7 +165,7 @@
       "id": "NL-GLM-008",
       "invariant": "`z(-effect) = -z(effect)` (the null t distribution is symmetric)",
       "observation_point": "`Contrast.z_score`",
-      "precondition": "t-type `Contrast`, finite statistic, `p` unclipped",
+      "precondition": "t-type `Contrast` with floating-point `effect`, finite statistic, `p` unclipped",
       "rationale": "The z-score of a t contrast is odd in the effect.",
       "scientific_quantity": "contrast z-score",
       "source": "nilearn/glm/contrasts.py",
