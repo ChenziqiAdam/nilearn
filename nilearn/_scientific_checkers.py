@@ -303,7 +303,8 @@ def check_butterworth_cutoff(sos, critical_freq, sampling_rate, order):
     """NL-SIG-004: |H(f_c)| = 1/sqrt(2) at each critical frequency."""
     from scipy.signal import sosfreqz
 
-    if order > 10:
+    # P: order 0 is the identity (no cut-off exists); order > 10 loses the sos precision
+    if order < 1 or order > 10:
         return
     nyq = 0.5 * float(sampling_rate)
     freqs = np.atleast_1d(np.asarray(critical_freq, dtype=np.float64))
@@ -533,6 +534,8 @@ def check_t_f_equivalence(con, baseline, p_t):
     e = np.asarray(con.effect)
     if e.ndim == 2 and e.shape[0] != 1:
         return
+    if not np.issubdtype(e.dtype, np.inexact):
+        return  # P: floating-point effect (integer effects overflow in effect - baseline)
     eps = _eps_in(e, con.variance, p_t)
     e2 = np.atleast_2d(_f64(e))
     cf = _clone_contrast(con, effect=e2, stat_type="F", dim=1)
