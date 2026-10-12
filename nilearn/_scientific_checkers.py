@@ -130,6 +130,12 @@ def _f64(x):
     return np.asarray(x, dtype=np.float64)
 
 
+def _num(x):
+    """complex128 for complex input, float64 otherwise (no silent imag drop)."""
+    a = np.asarray(x)
+    return a.astype(np.complex128) if np.iscomplexobj(a) else a.astype(np.float64)
+
+
 def _eps_in(*arrays):
     """Largest unit round-off among the (floating) input arrays, >= float64 eps."""
     eps = _EPS
@@ -196,6 +202,12 @@ def check_detrend(out, l1):
     n = out.shape[0]
     if not _scale_ok(l1 / n):
         return
+    # P (R10): the detrend runs in the data's own dtype; l1 is a float64 copy, so
+    # the dtype-aware subnormal bound must be applied with the output dtype
+    if out.dtype.kind == "f":
+        mag = float(np.max(l1)) / n
+        if mag != 0.0 and mag < 1e4 * float(np.finfo(out.dtype).tiny):
+            return
     # float32 input stays float32 inside _detrend; each output element carries a
     # few ulps of the *input* magnitude, hence C * eps_d * sum|x_in|.
     # the column mean / slope are sequential reductions over n samples: their
@@ -274,9 +286,13 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
     std = x.std(axis=0, ddof=1)
     mean = x.mean(axis=0)
     if standardize == "psc" and not detrend:
+        # P (R10): the library zeroes a column when its mean, computed in the
+        # data dtype, is below float64 eps; that mean carries (C + n) eps_d of
+        # relative round-off, so columns inside that band of the cut are undecided
+        band = 1.0 + (_C + x.shape[0]) * eps
         ok = (
             (std > 0)
-            & (np.abs(mean) > _EPS)
+            & (np.abs(mean) > _EPS * band)
             & (np.abs(mean) >= 1e6 * eps * std)
         )
         if not ok.any():
@@ -362,6 +378,10 @@ def check_cosine_drift(drift, frame_times, high_pass):
 def check_compcor(u, s, ix_, n_confounds, n_samples, mx_in=None, n_kept=1):
     """NL-SIG-008: components lie in the span of detrended series."""
     u = np.asarray(u)
+    # P (R10): the Gram matrix series.series^T / n (whose eigenvalues are s) is
+    # formed in the data dtype; below 1e4 * tiny of that dtype it is subnormal
+    if not _scale_ok(np.asarray(s)):
+        return
     s = np.asarray(s, dtype=np.float64)
     if u.ndim != 2 or not _finite(u) or n_samples < 3:
         return
@@ -418,17 +438,19 @@ def _svd_condition(x, max_kappa=1e8):
 def check_ols_normal_equations(xw, wy, wresid):
     """NL-GLM-001: X_w^T r_w = 0."""
     eps = _eps_in(xw, wy, wresid)
-    x, y, r = _f64(xw), _f64(wy), _f64(wresid)
+    # P (R10): complex data/designs are least-squares fitted by pinv, whose
+    # normal equations are X^H r = 0; a float64 cast would drop the imaginary part
+    x, y, r = _num(xw), _num(wy), _num(wresid)
     if x.ndim != 2 or not (_finite(x) and _finite(y) and _finite(r)):
         return
-    if not _scale_ok(x, y):
+    if not _scale_ok(np.abs(x), np.abs(y)):
         return
     n, p = x.shape
     kappa = _svd_condition(x)
     if kappa is None:
         return
     y2, r2 = y.reshape(n, -1), r.reshape(n, -1)
-    g = np.abs(x.T @ r2).max(axis=0)
+    g = np.abs(x.conj().T @ r2).max(axis=0)
     tol = _C * eps * (n + p) * kappa * np.linalg.norm(x) * np.linalg.norm(y2, axis=0)
     trigger_if(np.any(g > tol), "NL-GLM-001")
 
@@ -439,11 +461,11 @@ def check_r_square(model, xw, wy, wresid, r2):
     rho = getattr(model, "rho", None)
     if rho is not None and np.any(np.asarray(rho) != 0):
         return
-    x, y, r = _f64(xw), _f64(wy), _f64(wresid)
-    r2 = np.atleast_1d(_f64(r2)).ravel()
+    x, y, r = _num(xw), _num(wy), _num(wresid)  # P (R10): complex-aware
+    r2 = np.atleast_1d(_f64(np.real(r2))).ravel()
     if x.ndim != 2 or not (_finite(x) and _finite(y) and _finite(r)):
         return
-    if not _scale_ok(x, y):
+    if not _scale_ok(np.abs(x), np.abs(y)):
         return
     n = x.shape[0]
     kappa = _svd_condition(x)
@@ -459,8 +481,8 @@ def check_r_square(model, xw, wy, wresid, r2):
     ok = var > 0
     if not ok.any():
         return
-    sse = (r2d[:, idx] ** 2).sum(axis=0)
-    mu = y2[:, idx].mean(axis=0)
+    sse = (np.abs(r2d[:, idx]) ** 2).sum(axis=0)
+    mu = np.abs(y2[:, idx].mean(axis=0))
     ref = 1.0 - sse / (n * np.where(ok, var, 1.0))
     # prediction error is eps * kappa * ||y|| (backward-stable LS), i.e. relative to
     # the spread eps * kappa * sqrt(1 + mean^2/var): the design conditioning and the
@@ -685,10 +707,11 @@ def check_orthogonalize(x0, out):
         return
     eps = _eps_in(out)
     x = _f64(out)
+    x0_raw = np.asarray(x0)
     x0 = _f64(x0)
     if x.ndim != 2 or x.shape != x0.shape or not _finite(x):
         return
-    if not _scale_ok(x0):
+    if not _scale_ok(x0_raw, np.asarray(out)):  # R10: magnitude in the data dtype
         return
     n, k = x.shape
     norms = np.linalg.norm(x, axis=0)
@@ -729,7 +752,7 @@ def check_bold_linearity(
     onsets, durations, values = (np.asarray(a) for a in exp_condition)
     vals = _f64(values)
     ft = np.asarray(frame_times)
-    if not _scale_ok(vals):
+    if not _scale_ok(vals, values):  # R10: magnitude in the data dtype
         return
 
     def call(on, du, va):
@@ -996,7 +1019,7 @@ def check_vec_isometry_to_vec(sym, vec, fn):
     if s.ndim < 2 or s.shape[-1] != s.shape[-2] or not (_finite(s) and _finite(v)):
         return
     p = s.shape[-1]
-    if not _scale_ok(s):
+    if not _scale_ok(s, sym, vec):  # R10: magnitude in the data dtype
         return
     if np.max(np.abs(s - np.swapaxes(s, -1, -2))) > _C * _EPS * max(np.abs(s).max(), 1e-300):
         return  # P: symmetric input only
@@ -1026,7 +1049,7 @@ def check_vec_isometry_to_sym(vec, sym, fn):
         return
     p = s.shape[-1]
     n = v.shape[-1]
-    if p < 2 or not _scale_ok(v):
+    if p < 2 or not _scale_ok(v, vec, sym):  # R10: magnitude in the data dtype
         return
     ed = np.zeros(n)
     ed[0] = 1.0  # entry (0, 0)
@@ -1221,8 +1244,13 @@ def check_smoothing(x_in, out, affine, fwhm, smooth_fn, copy_flag):
         return
     eps = _eps_of(o)
     a64, o64 = a.astype(np.float64), o.astype(np.float64)
-    if not _scale_ok(a64):
-        return
+    # P (R10): x_in is a float64 snapshot (snap_copy), so the dtype-aware
+    # subnormal bound must use the working (output) dtype; an all-zero
+    # underflowed output must not pass as "zero magnitude"
+    if o.dtype.kind == "f":
+        mag = float(np.abs(a64).max())
+        if mag != 0.0 and mag < 1e4 * float(np.finfo(o.dtype).tiny):
+            return
     ksum = sum(2 * int(4.0 * s + 0.5) + 1 for s in sigma if s > 0)
     # sum: every output element carries kernel_len * eps of its input magnitude
     tol_sum = _C * eps * (ksum + np.log2(max(a.size, 2))) * np.abs(a64).sum()
@@ -1334,6 +1362,9 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
 
     s = _f64(region_signals)
     if s.ndim != 2 or not _finite(s) or not _scale_ok(s):
+        return
+    # P (R10): magnitude judged in the signal and result-image dtypes
+    if not _scale_ok(np.asarray(region_signals), nl_image.get_data(result_img)):
         return
     s2, _ = img_to_signals_maps(result_img, maps_img, mask_img=mask_img)
     if s2.shape != s.shape:
