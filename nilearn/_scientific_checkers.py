@@ -145,6 +145,25 @@ def _eps_in(*arrays):
     return eps
 
 
+def _narrow_dtype(*arrays, growth=1.0):
+    """Unified narrow-dtype policy (R12). Returns ``(eps, wraps)``.
+
+    eps: unit round-off of the NARROWEST floating dtype among ``arrays`` (pass the
+    production working arrays, e.g. a float32 ``theta``, not only float64 copies).
+    wraps: some integer array, grown by ``growth`` (the caller's bound on the
+    integer intermediate relative to max|x|), leaves its ``np.iinfo`` range, so a
+    disagreement may be integer wrap-around (a dtype fact, not a law violation).
+    """
+    wraps = False
+    for a in arrays:
+        a = None if a is None else np.asarray(a)
+        if a is not None and a.dtype.kind in "iu" and a.size:
+            info = np.iinfo(a.dtype)
+            lo, hi = float(a.min()) * growth, float(a.max()) * growth
+            wraps = wraps or not (info.min <= min(lo, hi) and max(lo, hi) <= info.max)
+    return _eps_in(*arrays), wraps
+
+
 def _scale_ok(*arrays, lo=1e-100, hi=1e100):
     """P: every non-zero magnitude lies where float64 products/squares neither
     underflow into subnormals nor overflow (the checkers form such products)."""
@@ -589,8 +608,19 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
 
     cv0 = np.asarray(con_val)
     cv = np.asarray(con_val, dtype=np.float64)
-    # round-off of the fit: its design / result dtype (the contrast keeps it)
-    eps = _eps_in(con.effect, con.variance, cv0)
+    # round-off of the fit: the stored effect/variance are float64 copies, so the
+    # working precision comes from theta (R12: float32 fit with an int8 contrast)
+    thetas = [getattr(results[lab], "theta", None) for lab in list(results)[:10]]
+    eps, _ = _narrow_dtype(con.effect, con.variance, cv0, *thetas)
+
+    def scaled(c, a):
+        # re-calls keep the production contrast dtype (no silent int8 -> float64
+        # promotion) whenever a * c is exactly representable in it; otherwise
+        # the float re-call is covered by the working-precision eps above
+        c = np.asarray(c)
+        if c.dtype.kind in "iu" and not _narrow_dtype(c, growth=a)[1]:
+            return (c.astype(np.int64) * int(a)).astype(c.dtype)
+        return a * c
     if stat_type == "t":
         if cv.ndim != 1:
             return
@@ -602,7 +632,7 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
             return
         bad = False
         for a in (2.0, -1.0):
-            c2 = compute_contrast(labels, results, a * cv0, "t")
+            c2 = compute_contrast(labels, results, scaled(cv0, a), "t")
             s2 = _clone_contrast(c2).stat()
             scale = np.maximum(np.abs(base), 1.0)
             bad = bad or np.any(
@@ -634,10 +664,9 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
         base = _clone_contrast(con).stat()
         v0 = np.asarray(con.variance, dtype=np.float64).ravel()
         ok = np.isfinite(base) & (v0 > 1e-40)
-        cv2 = cv.copy()
-        cv2[0] *= 2.0
+        cv2 = np.concatenate([scaled(cv0[:1], 2.0), cv0[1:]])
         bad = False
-        for cm in (cv[::-1].copy(), cv2):
+        for cm in (cv0[::-1].copy(), cv2):
             c2 = compute_contrast(labels, results, cm, "F")
             if np.iscomplexobj(c2.effect):
                 return
