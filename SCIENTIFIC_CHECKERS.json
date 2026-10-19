@@ -256,7 +256,7 @@
       "symbol": "threshold_img"
     },
     {
-      "alarm": "re-call with `D = diag(2^k_i)`, `k_i = (i mod 5) - 2` (X: exact) differs by more than `C * eps`",
+      "alarm": "re-call with `D = diag(2^k_i)`, `k_i = (i mod 5) - 2` (X: exact) differs by more than `C * eps`, with `eps` that of the narrowest floating dtype among the production output and the re-call output (integer covariances are re-called in float64, but production works in NumPy's promotion of `np.sqrt`: int8 -> float16, int16 -> float32)",
       "family": "correlation_scale_invariance",
       "id": "NL-CON-001",
       "invariant": "`corr(D S D) = corr(S)` for positive diagonal `D`",

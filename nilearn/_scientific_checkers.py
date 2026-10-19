@@ -974,7 +974,13 @@ def check_corr_scale_invariance(cov, corr):
     scaled = (c.astype(dt) * d[:, None]) * d[None, :]
     corr2 = np.asarray(cov_to_corr(scaled))
     diff = np.max(np.abs(corr2.astype(np.float64) - np.asarray(corr, dtype=np.float64)))
-    trigger_if(diff > _C * _eps_of(corr2), "NL-CON-001")
+    # R13: integer covariances are re-called in float64 above, but production
+    # works in NumPy's promotion of np.sqrt(int) (int8 -> float16, int16 ->
+    # float32), so the tolerance follows the narrowest of the production
+    # output and the re-call (R12 narrow-dtype policy); eps of corr2 alone was
+    # float64 eps against a float16/float32 result.
+    eps, _ = _narrow_dtype(corr, corr2)
+    trigger_if(diff > _C * eps, "NL-CON-001")
 
 
 @_guarded
