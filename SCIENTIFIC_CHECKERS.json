@@ -256,7 +256,7 @@
       "symbol": "threshold_img"
     },
     {
-      "alarm": "re-call with `D = diag(2^k_i)`, `k_i = (i mod 5) - 2` (X: exact) differs by more than `C * eps`, with `eps` that of the narrowest floating dtype among the production output and the re-call output (integer covariances are re-called in float64, but production works in NumPy's promotion of `np.sqrt`: int8 -> float16, int16 -> float32)",
+      "alarm": "re-call with `D = diag(2^k_i)`, `k_i = (i mod 5) - 2` (X: exact) differs by more than `C * eps`, with `eps` that of the narrowest floating dtype among the production output and the re-call output (integer covariances are re-called in float64, but production works in NumPy's promotion of `np.sqrt`: int8 -> float16, int16 -> float32; complex covariances are re-called and compared in their own dtype, complex64 carrying float32 eps)",
       "family": "correlation_scale_invariance",
       "id": "NL-CON-001",
       "invariant": "`corr(D S D) = corr(S)` for positive diagonal `D`",
@@ -436,7 +436,7 @@
       "symbol": "smooth_array"
     },
     {
-      "alarm": "difference `> C * eps_d * max|x| * 8 + 3 * k * dx * g` (cubic spline conditioning, plus the world-coordinate round-off of the source coordinate: `dx = C * eps64 * ||inv(A_in[:3,:3])||_inf * W` voxels with `W` the sum of the translation magnitudes and the output grid extent, `g` the largest per-voxel change of the input, `k = 2` for cubic and 1 otherwise) from `scipy.ndimage.map_coordinates`, with clipping and fill applied as documented",
+      "alarm": "difference `> C * eps_d * max|x| * 8 + 3 * k * dx * g` (cubic spline conditioning, plus the world-coordinate round-off of the source coordinate: `dx = C * eps64 * ||inv(A_in[:3,:3])||_inf * W` voxels with `W` the sum of the translation magnitudes and the output grid extent, `g` the largest per-voxel change of the input, `k = 2` for cubic and 1 otherwise) from `scipy.ndimage.map_coordinates`, with clipping and fill applied as documented; when the transform admits the library's integer-shift shortcut (`A == I` and integer `b`, as `resample_img` computes them, `force_resample=False`) the bound adds `1e-8 * max|data|`, the documented `crop_img` rtol below which voxels are zeroed",
       "family": "resample_world_geometry",
       "id": "NL-IMG-003",
       "invariant": "the value of output voxel `v` equals the input interpolated (same order) at `inv(A_in) A_out v` using the *returned* affine `A_out`",
@@ -465,7 +465,7 @@
       "id": "NL-IMG-005",
       "invariant": "`img_to_signals_maps(signals_to_img_maps(S)) = S`",
       "observation_point": "return of `signals_to_img_maps`",
-      "precondition": "signals and result image magnitude above 1e4 times the smallest normal number of their dtypes; masked maps matrix full column rank with `kappa <= 1e6`; for an integer result dtype the product of the signals and the maps fits that dtype (no wraparound); `eps` is the largest round-off among the dtypes of the signals, the maps and the result image",
+      "precondition": "signals and result image magnitude above 1e4 times the smallest normal number of their dtypes; masked maps matrix full column rank with `kappa <= 1e6`; for an integer result dtype the product of the signals and the maps fits that dtype (no wraparound); `eps` is the largest round-off among the dtypes of the signals, the maps and the result image (complex64: float32 round-off); complex signals and maps are compared and conditioned as complex",
       "rationale": "Map-based region signals are recovered by least squares.",
       "scientific_quantity": "map-based region signals",
       "source": "nilearn/regions/signal_extraction.py",

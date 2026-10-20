@@ -117,9 +117,11 @@ def sampled(name):
 
 # ----------------------------------------------------------------- helpers
 def _eps_of(x):
+    # R14: complex dtypes carry the eps of their real precision (finfo of
+    # complex64 is float32's); complex64 was judged at float64 eps before
     try:
         dt = np.dtype(getattr(x, "dtype", np.float64))
-        if dt.kind == "f":
+        if dt.kind in "fc":
             return float(np.finfo(dt).eps)
     except Exception:
         _swallowed()
@@ -171,12 +173,12 @@ def _scale_ok(*arrays, lo=1e-100, hi=1e100):
         if a is None:
             continue
         a = np.asarray(a)
-        if a.dtype.kind == "f":
+        if a.dtype.kind in "fc":
             # the data's own dtype: below ~1e4 tiny its products are subnormal
             lo_a = max(lo, 1e4 * float(np.finfo(a.dtype).tiny))
         else:
             lo_a = lo
-        m = np.abs(a.astype(np.float64))
+        m = np.abs(_num(a))
         if m.size == 0:
             continue
         mx = float(m.max())
@@ -223,7 +225,7 @@ def check_detrend(out, l1):
         return
     # P (R10): the detrend runs in the data's own dtype; l1 is a float64 copy, so
     # the dtype-aware subnormal bound must be applied with the output dtype
-    if out.dtype.kind == "f":
+    if out.dtype.kind in "fc":
         mag = float(np.max(l1)) / n
         if mag != 0.0 and mag < 1e4 * float(np.finfo(out.dtype).tiny):
             return
@@ -294,7 +296,7 @@ def check_standardize(x_in, out, standardize, detrend, mx_in=None):
     o64 = o.astype(np.float64)
     # P: the library forms sum(x^2) in the data's own dtype; beyond
     # sqrt(finfo.max / n) that sum overflows (float32: ~1e18), not a defect
-    if o.dtype.kind == "f" and np.abs(x).max() * np.sqrt(x.shape[0]) > 0.5 * np.sqrt(np.finfo(o.dtype).max):
+    if o.dtype.kind in "fc" and np.abs(x).max() * np.sqrt(x.shape[0]) > 0.5 * np.sqrt(np.finfo(o.dtype).max):
         return
     # error scale is the magnitude of the *input* (before detrending), not of
     # the possibly detrended-to-rounding-noise column
@@ -960,10 +962,12 @@ def check_corr_scale_invariance(cov, corr):
         return
     if not _scale_ok(np.diag(c), lo=1e-150, hi=1e150):
         return
-    dt = c.dtype if c.dtype.kind == "f" else np.float64
+    # R14: complex covariances are re-called in their own dtype (the float64
+    # real part both changed the input and judged complex64 at float64 eps)
+    dt = c.dtype if c.dtype.kind in "fc" else np.float64
     # P: the 2^k transform (factor 16) neither overflows nor reaches the
     # subnormal range of the matrix dtype
-    ac = np.abs(c.astype(np.float64))
+    ac = np.abs(_num(c))
     nz = ac[ac > 0]
     if nz.size and (
         ac.max() * 16.0 > 0.5 * float(np.finfo(dt).max)
@@ -973,7 +977,7 @@ def check_corr_scale_invariance(cov, corr):
     d = _pow2_scale(c.shape[0]).astype(dt)
     scaled = (c.astype(dt) * d[:, None]) * d[None, :]
     corr2 = np.asarray(cov_to_corr(scaled))
-    diff = np.max(np.abs(corr2.astype(np.float64) - np.asarray(corr, dtype=np.float64)))
+    diff = np.max(np.abs(_num(corr2) - _num(corr)))
     # R13: integer covariances are re-called in float64 above, but production
     # works in NumPy's promotion of np.sqrt(int) (int8 -> float16, int16 ->
     # float32), so the tolerance follows the narrowest of the production
@@ -1282,7 +1286,7 @@ def check_smoothing(x_in, out, affine, fwhm, smooth_fn, copy_flag):
     # P (R10): x_in is a float64 snapshot (snap_copy), so the dtype-aware
     # subnormal bound must use the working (output) dtype; an all-zero
     # underflowed output must not pass as "zero magnitude"
-    if o.dtype.kind == "f":
+    if o.dtype.kind in "fc":
         mag = float(np.abs(a64).max())
         if mag != 0.0 and mag < 1e4 * float(np.finfo(o.dtype).tiny):
             return
@@ -1358,6 +1362,17 @@ def check_resample_geometry(data, affine, out, out_affine, interpolation, fill_v
     tol = _C * eps * 8 * max(np.abs(vin).max(), 1e-300)
     if o.dtype.kind in "iu":
         tol += 1.0  # P: integer output is quantised (rounded/truncated) by the cast
+    # R14: with A == I and an integer shift (as computed by resample_img) and
+    # force_resample=False the library places crop_img(img, pad=False), whose
+    # documented rtol=1e-8 zeroes every voxel with |x| <= 1e-8 * max|data|
+    # (max over all volumes); those voxels are off by at most that bound
+    from scipy import linalg as _sl
+    a_raw, o_raw = np.asarray(affine), np.asarray(out_affine)
+    tr = np.eye(4) if np.all(o_raw == a_raw) else np.dot(_sl.inv(a_raw), o_raw)
+    if np.all(np.eye(3) == tr[:3, :3]) and np.all(tr[:3, 3] == np.round(tr[:3, 3])):
+        d64 = np.abs(np.asarray(d, dtype=np.float64))
+        if _finite(d64):
+            tol += 1e-8 * float(d64.max())
     # source-coordinate error dx (voxels) times the largest per-voxel change
     grad = max(np.abs(np.diff(vin, axis=a)).max() for a in range(3))
     tol += dx * grad * 3 * (2 if order == 3 else 1)
@@ -1377,8 +1392,8 @@ def check_labels_signal_roundtrip(signals, result_img, labels_img, mask_img, bac
     )
     if s2.shape != s.shape:
         return  # P: every label survives the mask
-    eps = max(_eps_of(s2), _eps_of(s)) if s.dtype.kind == "f" else _eps_of(s2)
-    diff = np.max(np.abs(_f64(s2) - _f64(s)))
+    eps = max(_eps_of(s2), _eps_of(s)) if s.dtype.kind in "fc" else _eps_of(s2)
+    diff = np.max(np.abs(_num(s2) - _num(s)))
     # ndimage.mean accumulates the region sum sequentially: error ~ n_voxels * eps
     from nilearn import image as nl_image
 
@@ -1395,7 +1410,9 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     from nilearn import image as nl_image
     from nilearn.regions.signal_extraction import _trim_maps, img_to_signals_maps
 
-    s = _f64(region_signals)
+    # R14: _num keeps complex signals / maps complex (the float64 real part
+    # was compared and conditioned instead of the complex least squares)
+    s = _num(region_signals)
     if s.ndim != 2 or not _finite(s) or not _scale_ok(s):
         return
     # P (R10): magnitude judged in the signal and result-image dtypes
@@ -1412,7 +1429,7 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
         mabs = np.abs(_f64(maps_raw)).reshape(-1, s.shape[1])
         if (np.abs(s) @ mabs.T).max() > np.iinfo(rd).max:
             return  # P: the integer product fits its dtype (no wraparound)
-    maps = _f64(maps_raw)
+    maps = _num(maps_raw)
     if mask_img is not None:
         mk = np.asarray(nl_image.get_data(nl_image.check_niimg_3d(mask_img)))
         maps, mk2, _ = _trim_maps(maps, mk, keep_empty=True)
@@ -1425,5 +1442,5 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     if sv[-1] <= 0 or sv[0] / sv[-1] > 1e6:
         return  # P: full column rank, kappa <= 1e6
     kappa = sv[0] / sv[-1]
-    diff = np.max(np.abs(_f64(s2) - s))
+    diff = np.max(np.abs(_num(s2) - s))
     trigger_if(diff > _C * eps * kappa * np.linalg.norm(s), "NL-IMG-005")
