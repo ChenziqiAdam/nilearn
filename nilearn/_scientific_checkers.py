@@ -1205,6 +1205,12 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
 
 
 # ================================================================ mass-univ.
+def _work(x):
+    """Float input in its own dtype (re-calls must not promote it); float64 otherwise."""
+    a = np.asarray(x)
+    return a if a.dtype.kind == "f" else a.astype(np.float64)
+
+
 @_guarded
 def check_tfce(arr4d, bin_struct, E, H, dh, two_sided, out):
     """NL-MU-002 (sign symmetry) and NL-MU-003 (homogeneity of degree H)."""
@@ -1212,17 +1218,24 @@ def check_tfce(arr4d, bin_struct, E, H, dh, two_sided, out):
 
     if not sampled("tfce"):
         return
-    a, o = np.asarray(arr4d, dtype=np.float64), np.asarray(out, dtype=np.float64)
+    # R15: re-call in the production dtype. Negation and doubling are exact in
+    # any float dtype, so the re-calls see the same thresholds and cluster
+    # memberships; a float64 promotion of float32 maps moved voxels across the
+    # float32-rounded score thresholds (benign-fuzz false alarm, 3e-7 relative).
+    a = _work(arr4d)
+    o = np.asarray(out, dtype=np.float64)
     if a.size > _MAX_ELEMS or not _finite(a):
         return
     mx = np.abs(o).max()
-    # each voxel sums up to 2 * 1000 terms: accumulation-order rounding
-    slack = _C * _EPS * 2000
+    # each voxel sums up to 2 * 1000 terms in the output dtype: accumulation-order rounding
+    slack = _C * _eps_in(a, out) * 2000
     if two_sided:
         neg = calculate_tfce(-a, bin_struct, E=E, H=H, dh=dh, two_sided_test=True)
         trigger_if(np.max(np.abs(neg + o)) > slack * mx, "NL-MU-002")
     if dh == "auto" and mx > 0:
-        dbl = calculate_tfce(2.0 * a, bin_struct, E=E, H=H, dh=dh, two_sided_test=two_sided)
+        if not np.isfinite(2.0 * np.abs(a).max()):
+            return  # doubling would overflow the dtype
+        dbl = calculate_tfce(a * a.dtype.type(2), bin_struct, E=E, H=H, dh=dh, two_sided_test=two_sided)
         want = (2.0**H) * o
         trigger_if(np.max(np.abs(dbl - want)) > slack * np.abs(want).max(), "NL-MU-003")
 
@@ -1251,13 +1264,13 @@ def check_cluster_measures(arr4d, threshold, bin_struct, two_sided, sizes, masse
 
     if not two_sided or not sampled("cluster_measures"):
         return
-    a = np.asarray(arr4d, dtype=np.float64)
+    a = _work(arr4d)  # R15: production dtype (negation is exact), see check_tfce
     if a.size > _MAX_ELEMS or not _finite(a):
         return
     s2, m2 = calculate_cluster_measures(-a, threshold, bin_struct, two_sided_test=True)
     m0 = np.asarray(masses, dtype=np.float64)
     bad = np.any(np.asarray(sizes) != np.asarray(s2))
-    bad = bad or np.any(np.abs(np.asarray(m2) - m0) > _C * _EPS * np.maximum(np.abs(m0), 1e-300) * a.size)
+    bad = bad or np.any(np.abs(np.asarray(m2) - m0) > _C * _eps_in(a) * np.maximum(np.abs(m0), 1e-300) * a.size)
     trigger_if(bad, "NL-MU-005")
 
 

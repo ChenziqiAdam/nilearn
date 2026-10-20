@@ -364,7 +364,7 @@
       "symbol": "_group_sparse_covariance"
     },
     {
-      "alarm": "re-call on `-X` differs by more than `C * eps * max|tfce|` (X: negation exact)",
+      "alarm": "re-call on `-X` differs by more than `C * eps * max|tfce|` (X: negation exact); the re-call runs in the input's own float dtype (no float64 promotion) and `eps` is that dtype's round-off",
       "family": "tfce_sign_symmetry",
       "id": "NL-MU-002",
       "invariant": "`tfce(-X) = -tfce(X)`",
@@ -376,7 +376,7 @@
       "symbol": "calculate_tfce"
     },
     {
-      "alarm": "re-call on `2 X` differs from `2^H tfce(X)` by more than `C * eps * max|tfce|` (X: power-of-two scaling is exact, `linspace` thresholds scale exactly)",
+      "alarm": "re-call on `2 X` differs from `2^H tfce(X)` by more than `C * eps * max|tfce|` (X: power-of-two scaling is exact, `linspace` thresholds scale exactly); the re-call runs in the input's own float dtype (no float64 promotion) and `eps` is that dtype's round-off",
       "family": "tfce_homogeneity",
       "id": "NL-MU-003",
       "invariant": "`tfce(c X) = c^H tfce(X)` for `c > 0`",
@@ -400,7 +400,7 @@
       "symbol": "null_to_p"
     },
     {
-      "alarm": "re-call on `-X` differs in size or by more than `C * eps * max mass` in mass",
+      "alarm": "re-call on `-X` differs in size or by more than `C * eps * max mass` in mass; the re-call runs in the input's own float dtype (no float64 promotion) and `eps` is that dtype's round-off",
       "family": "cluster_measure_sign_symmetry",
       "id": "NL-MU-005",
       "invariant": "`(max size, max mass)(-X) = (max size, max mass)(X)`",
