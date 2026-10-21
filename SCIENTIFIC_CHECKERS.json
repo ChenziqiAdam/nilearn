@@ -153,7 +153,7 @@
       "id": "NL-GLM-007",
       "invariant": "the pooled effect lies in `[min_i c_i, max_i c_i]`; unweighted pooled variance `mean(v)/N` lies in `[min v / N, max v / N]`; inverse-variance pooled variance `1/sum(1/v)` lies in `[min v / N, min v]` (independent estimates cannot be combined into a larger variance than the best one, nor a smaller one than `N` equal ones)",
       "observation_point": "return of `_compute_fixed_effects_params`",
-      "precondition": "finite effects and variances over `N >= 1` runs (variances clipped at `1e-16` as in the function)",
+      "precondition": "finite effects and variances over `N >= 1` runs (variances clipped at `1e-16` as in the function); for inverse-variance pooling, the sums `sum(1/v)` and `sum(|c|/v)` (with the `1e-16` floor as rounded in the variances' dtype) do not overflow the dtype production forms them in (e.g. float16 runs whose summed precision exceeds 65504 are out of scope; float32/float64 cannot overflow there)",
       "rationale": "Fixed-effects pooling stays inside the physical bounds.",
       "scientific_quantity": "fixed-effects pooled estimate",
       "source": "nilearn/glm/contrasts.py",
@@ -220,7 +220,7 @@
       "symbol": "_generic_time_derivative"
     },
     {
-      "alarm": "ratio exceeds `alpha * (1 + 1e-9)` (the `- 1e-12` shift times `|u| <= 40` plus rounding)",
+      "alarm": "ratio exceeds `f * alpha_ * (1 + 1e-9)` (the `- 1e-12` shift times `|u| <= 40` plus rounding), where `alpha_` is `alpha / f` rounded in the dtype of the given `alpha` as in the function (equal to `alpha / f` unless the halving is inexact, e.g. a float16 subnormal alpha)",
       "family": "bh_fdr_control",
       "id": "NL-THR-001",
       "invariant": "with `R` the number of statistics at or above `u`, `f * n * sf(u) / R <= alpha` where `f = 2` for two-sided tests (`f = 1` otherwise)",
@@ -232,7 +232,7 @@
       "symbol": "threshold_stats_img"
     },
     {
-      "alarm": "strict count of a more conservative method exceeds the loose count of the less conservative one (margin `1e-9 (1 + |u|)` on each threshold)",
+      "alarm": "strict count of a more conservative method exceeds the loose count of the less conservative one (margin `1e-9 (1 + |u|)` on each threshold; the Bonferroni threshold additionally gets the exact shift `isf(alpha_/n) - isf(alpha_/n rounded in the dtype of alpha)` that the function's second rounding of a narrow NumPy `alpha` causes, zero for a Python/float64 alpha)",
       "family": "multiple_comparison_ordering",
       "id": "NL-THR-002",
       "invariant": "number of discoveries `R_bonferroni <= R_fdr <= R_fpr` for the same data, alpha and sidedness",
@@ -465,7 +465,7 @@
       "id": "NL-IMG-005",
       "invariant": "`img_to_signals_maps(signals_to_img_maps(S)) = S`",
       "observation_point": "return of `signals_to_img_maps`",
-      "precondition": "signals and result image magnitude above 1e4 times the smallest normal number of their dtypes; masked maps matrix full column rank with `kappa <= 1e6`; for an integer result dtype the product of the signals and the maps fits that dtype (no wraparound); `eps` is the largest round-off among the dtypes of the signals, the maps and the result image (complex64: float32 round-off); complex signals and maps are compared and conditioned as complex",
+      "precondition": "signals and result image magnitude above 1e4 times the smallest normal number of their dtypes; masked maps matrix full column rank with `kappa <= 1e6`; for an integer or bool result dtype or dot-product dtype (`result_type` of signals and maps) the product of the signals and the maps fits that dtype (no wraparound; bool: at most 1, as a bool dot product saturates); `eps` is the largest round-off among the dtypes of the signals, the maps and the result image (complex64: float32 round-off); complex signals and maps are compared and conditioned as complex",
       "rationale": "Map-based region signals are recovered by least squares.",
       "scientific_quantity": "map-based region signals",
       "source": "nilearn/regions/signal_extraction.py",

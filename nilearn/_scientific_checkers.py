@@ -679,6 +679,31 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
 
 
 @_guarded
+def _pooling_overflows(contrasts, variances, keep):
+    """P (R18, NL-GLM-007): the precision-weighted sums fit the working dtype.
+
+    Production forms ``w = 1/max(v, 1e-16)``, ``sum(w)`` and ``sum(c*w)`` in the
+    caller's dtype (NumPy keeps float16 for float16 variances; the 1e-16 floor
+    itself rounds to 0 there). When a sum exceeds that dtype's ``finfo.max`` it
+    is inf and the pooled variance 1/inf = 0: a dynamic-range fact of the
+    caller's dtype, not a pooling defect (run 16: 8 float16 runs at v = 1e-4,
+    sum(w) = 8e4 > 65504). float32/float64 cannot reach it (w <= 1e16 after
+    the floor, |c| <= 1e100 by the scale gate), so they stay fully checked.
+    """
+    v_in = np.asarray(variances)
+    wd = np.result_type(v_in.dtype, 1.0)  # dtype of 1.0 / variances
+    if wd.kind != "f":
+        return False
+    floor = float(np.asarray(1e-16, dtype=wd))
+    w = 1.0 / np.maximum(_f64(v_in), floor)[:, keep]  # exact float64 values (inf for 0)
+    pd = np.result_type(np.asarray(contrasts).dtype, wd)  # dtype of contrasts * w
+    c = np.abs(_f64(contrasts))[:, keep]
+    return bool(
+        np.any(w.sum(axis=0) > float(np.finfo(wd).max))
+        or (pd.kind == "f" and np.any((c * w).sum(axis=0) > float(np.finfo(pd).max)))
+    )
+
+
 def check_fixed_effects(contrasts, variances, precision_weighted, fx_con, fx_var):
     """NL-GLM-007: pooled effect/variance stay inside the physical bounds."""
     eps = _eps_in(contrasts, variances, fx_con, fx_var)
@@ -694,6 +719,8 @@ def check_fixed_effects(contrasts, variances, precision_weighted, fx_con, fx_var
     if not keep.any():
         return
     c, fc, fv, v = c[:, keep], fc[keep], fv[keep], v[:, keep]
+    if precision_weighted and _pooling_overflows(contrasts, variances, keep):
+        return
     tol_e = _C * eps * n * np.abs(c).max(axis=0)
     bad = np.any(fc < c.min(axis=0) - tol_e) or np.any(fc > c.max(axis=0) + tol_e)
     vmin, vmax = v.min(axis=0), v.max(axis=0)
@@ -860,6 +887,20 @@ def check_hrf_derivative(func, t_r, oversampling, time_length, onset, dt, d):
 
 
 # ===================================================================== THR
+def _alpha_levels(alpha, two_sided, n):
+    """(alpha_, alpha_/n) as production rounds them (R18, NL-THR-001/002).
+
+    ``threshold_stats_img`` forms ``alpha / 2`` and ``alpha_ / n_elements`` in
+    the dtype of the user's ``alpha`` (a NumPy float16/float32 scalar stays
+    narrow; a Python float is float64). The same operations are replayed here,
+    so the laws are judged at the levels the procedures were actually run at;
+    for a Python/float64 alpha these are the exact float64 values.
+    """
+    a = alpha if isinstance(alpha, (np.floating, np.ndarray)) else float(alpha)
+    a_ = a / 2 if two_sided else a
+    return float(a_), float(a_ / n)
+
+
 @_guarded
 def check_fdr_control(stats, threshold, alpha, two_sided):
     """NL-THR-001: the estimated FDR of the selected set is at most alpha."""
@@ -875,8 +916,13 @@ def check_fdr_control(stats, threshold, alpha, two_sided):
         return
     f = 2.0 if two_sided else 1.0
     est = f * st.size * norm.sf(threshold) / r
+    # R18: BH runs at production's alpha_ = alpha / 2 as rounded in alpha's own
+    # dtype (exact unless subnormal there: a float16 alpha of 3*2**-24 halves
+    # to 2**-23, +33%), so the bound is f * alpha_, which equals alpha whenever
+    # the halving is exact
+    a_, _ = _alpha_levels(alpha, two_sided, st.size)
     # tolerance: the -1e-12 shift of the threshold times |u| <= 40, plus rounding
-    trigger_if(est > alpha * (1 + 1e-9), "NL-THR-001")
+    trigger_if(est > f * a_ * (1 + 1e-9), "NL-THR-001")
 
 
 @_guarded
@@ -884,6 +930,8 @@ def check_multiple_comparison(
     stat_img, mask_img, alpha, two_sided, stats, method, threshold
 ):
     """NL-THR-002: discoveries are ordered bonferroni <= fdr <= fpr."""
+    from scipy.stats import norm
+
     from nilearn.glm.thresholding import threshold_stats_img
 
     thr = {method: float(threshold)}
@@ -906,13 +954,23 @@ def check_multiple_comparison(
     def delta(u):
         return 1e-9 * (1.0 + abs(u)) if np.isfinite(u) else 0.0
 
-    def strict(u):
-        return int(np.sum(st > u + delta(u)))
+    def strict(u, shift=0.0):
+        return int(np.sum(st > u + delta(u) + shift))
 
     def loose(u):
         return int(np.sum(st >= u - delta(u)))
 
-    bad = strict(thr["bonferroni"]) > loose(thr["fdr"])
+    # R18: Bonferroni's level alpha_/n is rounded a second time in alpha's dtype
+    # while BH multiplies alpha_ by k/n in float64, so for a narrow alpha the
+    # two run at different levels (float16 subnormal: 2x; normal: <= eps/2).
+    # The Bonferroni threshold may sit lower by exactly
+    # isf(alpha_/n) - isf(rounded alpha_/n); that shift is added to its margin
+    # (zero for a Python/float64 alpha, where only the 1-ulp division remains)
+    a_, a_n = _alpha_levels(alpha, two_sided, st.size)
+    shift = 0.0
+    if 0.0 < a_n < 1.0 and 0.0 < a_ / st.size < 1.0:
+        shift = max(0.0, float(norm.isf(a_ / st.size) - norm.isf(a_n)))
+    bad = strict(thr["bonferroni"], shift) > loose(thr["fdr"])
     bad = bad or strict(thr["fdr"]) > loose(thr["fpr"])
     trigger_if(bad, "NL-THR-002")
 
@@ -1438,10 +1496,17 @@ def check_maps_signal_consistency(region_signals, result_img, maps_img, mask_img
     # the least-squares products run in the promoted dtype of signals and maps
     eps = _eps_in(region_signals, maps_raw, nl_image.get_data(result_img))
     rd = np.asarray(nl_image.get_data(result_img)).dtype
-    if rd.kind in "iu":
+    # R18: the wraparound precondition also applies to the dtype np.dot works
+    # in (result_type of signals and maps), not only to the result image's:
+    # a bool dot product is an OR of ANDs, so two overlapping maps sum to 1,
+    # not 2 (run 16: bool signals/maps, recovered 0.667 vs 1)
+    pd = np.result_type(np.asarray(region_signals).dtype, np.asarray(maps_raw).dtype)
+    caps = [np.iinfo(dt).max for dt in (rd, pd) if dt.kind in "iu"]
+    caps += [1 for dt in (rd, pd) if dt.kind == "b"]
+    if caps:
         mabs = np.abs(_f64(maps_raw)).reshape(-1, s.shape[1])
-        if (np.abs(s) @ mabs.T).max() > np.iinfo(rd).max:
-            return  # P: the integer product fits its dtype (no wraparound)
+        if (np.abs(s) @ mabs.T).max() > min(caps):
+            return  # P: the integer/bool product fits its dtype (no wraparound/saturation)
     maps = _num(maps_raw)
     if mask_img is not None:
         mk = np.asarray(nl_image.get_data(nl_image.check_niimg_3d(mask_img)))
