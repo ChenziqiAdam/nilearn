@@ -249,7 +249,7 @@
       "id": "NL-THR-003",
       "invariant": "in the output, every 6-connected same-sign component has size `>= cluster_threshold`, and every voxel of a pre-cluster component of size `>= cluster_threshold` survives",
       "observation_point": "return of `threshold_img` (pre-cluster data snapshotted)",
-      "precondition": "3-D/4-D volume, `cluster_threshold > 0`; integer dtypes: volumes holding the dtype minimum are not checked (its sign flip is not representable)",
+      "precondition": "3-D/4-D volume, `cluster_threshold > 0`; integer dtypes: volumes holding the dtype minimum are not checked (its sign flip is not representable); volumes in which one sign fills every voxel are not checked (no background label exists in the library's labelling)",
       "rationale": "Cluster-extent thresholding removes exactly the small clusters.",
       "scientific_quantity": "cluster-extent threshold",
       "source": "nilearn/image/image.py",

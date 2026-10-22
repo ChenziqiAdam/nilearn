@@ -992,12 +992,20 @@ def check_cluster_extent(pre, out, k):
             continue  # P: -x is not representable at the signed-integer minimum
         keep = np.zeros(p.shape, dtype=bool)
         for sign in (1, -1):
-            lab, nl = label((p * sign) > 0, st)
+            side = (p * sign) > 0
+            if side.size and side.all():
+                # P: one sign fills the whole volume, so the library's labelling has no background label
+                # (it skips the first label); real volumes always contain sub-threshold background voxels
+                keep = None
+                break
+            lab, nl = label(side, st)
             if nl == 0:
                 continue
             sizes = np.bincount(lab.ravel())[1:]
             big = np.where(sizes >= k)[0] + 1
             keep |= np.isin(lab, big)
+        if keep is None:
+            continue
         bad = bad or not np.array_equal(o, np.where(keep, p, 0))
     trigger_if(bad, "NL-THR-003")
 
