@@ -593,6 +593,17 @@ def check_t_f_equivalence(con, baseline, p_t):
     two = 2.0 * np.minimum(pt, 1.0 - pt)
     ok = np.isfinite(pf) & np.isfinite(two) & (pf > 1e-290)
     ok &= (pt <= 0.5) | ((1.0 - pt) >= 1e-3)
+    # P (R21): entry-wise scale. A variance or squared effect below 1e4*tiny is
+    # subnormal; the t path (e/sqrt(v)) and F path (e^2/v) then round the stored
+    # subnormals differently (v = 1e-320: 1e-5 relative, p differs at 1e-6). No
+    # analysis has such units; the floor is the bank-wide _scale_ok one.
+    tn = 1e4 * float(np.finfo(np.float64).tiny)
+    v = np.broadcast_to(_f64(con.variance).ravel(), pf.shape) if _f64(con.variance).size in (1, pf.size) else None
+    if v is None:
+        return
+    d = (e2 - _f64(baseline)).ravel()
+    if d.size == pf.size:
+        ok &= (v >= tn) & ((d == 0) | (d * d >= tn))
     if not ok.any():
         return
     # F and t tails go through different incomplete-beta paths; their relative
@@ -608,6 +619,15 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
     from nilearn.glm._utils import pad_contrast
     from nilearn.glm.contrasts import compute_contrast
 
+    # P (R21): the GLM has no complex support (effect_ is a real array, so
+    # production silently drops the imaginary part of theta, and the dispersion
+    # sum(resid^2) is complex): the invariances are undefined for complex fits.
+    if any(
+        np.iscomplexobj(getattr(results[lab], name, 0))
+        for lab in list(results)[:10]
+        for name in ("theta", "dispersion")
+    ):
+        return
     cv0 = np.asarray(con_val)
     cv = np.asarray(con_val, dtype=np.float64)
     # round-off of the fit: the stored effect/variance are float64 copies, so the
@@ -1260,6 +1280,12 @@ def check_group_sparse(omega, emp_covs, n_samples, alpha, precisions_init):
                 de = 1.0 / np.sqrt(de)
                 we = np.linalg.eigvalsh(ec[..., i] * np.outer(de, de))
                 singular_in = we[0] <= _C * _EPS * p * we[-1]
+        if singular_in and np.all(np.asarray(alpha) == 0):
+            # P (R21): alpha = 0 with a singular empirical covariance (p > n):
+            # the unpenalised precision S^-1 does not exist, the likelihood is
+            # unbounded and the iterate diverges to a singular limit whose
+            # smallest eigenvalue is rounding noise of undetermined sign
+            continue
         bad = bad or (wn[0] < -thr if singular_in else wn[0] <= thr)
     trigger_if(bad, "NL-CON-009")
     if precisions_init is None:
