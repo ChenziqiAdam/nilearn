@@ -147,6 +147,22 @@ def _eps_in(*arrays):
     return eps
 
 
+def _lapack_eps(a):
+    """R23: unit round-off LAPACK really uses when pinv/lstsq factor design ``a``.
+
+    scipy picks float32 routines for int8/int16/uint8/bool (result_type with
+    float32 is float32) and float64 for int32/int64; floating designs are
+    already covered by ``_eps_of``.
+    """
+    try:
+        dt = np.asarray(a).dtype
+        if dt.kind in "iub":
+            return float(np.finfo(np.result_type(dt, np.float32)).eps)
+    except Exception:
+        _swallowed()
+    return _EPS
+
+
 def _narrow_dtype(*arrays, growth=1.0):
     """Unified narrow-dtype policy (R12). Returns ``(eps, wraps)``.
 
@@ -376,8 +392,11 @@ def check_cosine_drift(drift, frame_times, high_pass):
         b = d[:, :m]
         gram = b.T @ b
         tol = _C * _EPS * (2 * np.pi * m + 1)
-        bad = np.max(np.abs(gram - np.eye(m))) > tol
-        bad = bad or np.max(np.abs(b.sum(axis=0))) > tol
+        # R23: a length-n sum/dot product accumulates O(sqrt(n) eps) round-off
+        # (plus the rounding of the n entries themselves)
+        tol_n = tol * max(1.0, np.sqrt(n))
+        bad = np.max(np.abs(gram - np.eye(m))) > tol_n
+        bad = bad or np.max(np.abs(b.sum(axis=0))) > tol_n
         trigger_if(bad, "NL-SIG-006")
     dts = np.diff(ft)
     dt = float(np.median(dts))
@@ -458,7 +477,7 @@ def _svd_condition(x, max_kappa=1e8):
 @_guarded
 def check_ols_normal_equations(xw, wy, wresid):
     """NL-GLM-001: X_w^T r_w = 0."""
-    eps = _eps_in(xw, wy, wresid)
+    eps = max(_eps_in(xw, wy, wresid), _lapack_eps(xw))  # R23: int8/16 -> float32 pinv
     # P (R10): complex data/designs are least-squares fitted by pinv, whose
     # normal equations are X^H r = 0; a float64 cast would drop the imaginary part
     x, y, r = _num(xw), _num(wy), _num(wresid)
@@ -509,7 +528,7 @@ def check_r_square(model, xw, wy, wresid, r2):
     # the spread eps * kappa * sqrt(1 + mean^2/var): the design conditioning and the
     # data offset multiply. Factor 4: SSE and var each accumulate that error.
     # the pinv is formed in the design's dtype: its round-off enters the same way
-    eps = _eps_in(xw, wy, wresid)
+    eps = max(_eps_in(xw, wy, wresid), _lapack_eps(xw))  # R23
     tol = 4 * _C * eps * (1.0 + kappa * np.sqrt(1.0 + mu**2 / np.where(ok, var, 1.0)))
     # P: the tolerance is smaller than the range of R^2 (a spread that is rounding
     # noise of a huge offset leaves R^2 undetermined)
@@ -633,7 +652,10 @@ def check_contrast_invariance(labels, results, con_val, stat_type, con):
     # round-off of the fit: the stored effect/variance are float64 copies, so the
     # working precision comes from theta (R12: float32 fit with an int8 contrast)
     thetas = [getattr(results[lab], "theta", None) for lab in list(results)[:10]]
-    eps, _ = _narrow_dtype(con.effect, con.variance, cv0, *thetas)
+    # R23: the stored covariance can be float32 (int8/int16/float32 design) while
+    # theta is float64 (float64 Y)
+    covs = [getattr(results[lab], "cov", None) for lab in list(results)[:10]]
+    eps, _ = _narrow_dtype(con.effect, con.variance, cv0, *thetas, *covs)
 
     def scaled(c, a):
         # re-calls keep the production contrast dtype (no silent int8 -> float64
